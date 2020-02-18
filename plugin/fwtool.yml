@@ -1,4 +1,4 @@
-brickernel:
+fwtoolkernel:
   attributes: 0
   version:
     major: 1
@@ -7,7 +7,7 @@ brickernel:
     start: module_start
     stop: module_stop
   modules:
-    brickernel:
+    fwtoolkernel:
       syscall: true
       functions:
-        - skbricWork
+        - fwtool_cmd_handler

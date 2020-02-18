@@ -8,9 +8,9 @@ if(NOT DEFINED CMAKE_TOOLCHAIN_FILE)
   endif()
 endif()
 
-project(BRICTOOL)
-set(TITLE_ID "SKG8R1CC0")
-set(TITLE_NAME "brictool")
+project(FWTOOL)
+set(TITLE_ID "SKGFWT00L")
+set(TITLE_NAME "fwtool")
 
 include("${VITASDK}/share/vita.cmake" REQUIRED)
 
@@ -24,48 +24,48 @@ include_directories(
 
 link_directories(
 	${CMAKE_CURRENT_BINARY_DIR}
-	${CMAKE_BINARY_DIR}/brickernel_stubs
+	${CMAKE_BINARY_DIR}/fwtoolkernel_stubs
 )
 
-add_executable(app.elf
+add_executable(compile_app.elf
 	app/main.c
 	app/debugScreenFont.c
 )
 
-target_link_libraries(app.elf
+target_link_libraries(compile_app.elf
 	taihen_stub
 	SceDisplay_stub
 	SceCtrl_stub
-	brickernel_stub
+	fwtoolkernel_stub
 	SceAppMgr_stub
 	ScePower_stub 
 )
 
-add_custom_target(app.velf ALL
-	COMMAND vita-elf-create app.elf app.velf
+add_custom_target(compile_app.velf ALL
+	COMMAND vita-elf-create compile_app.elf compile_app.velf
 )
 
-add_custom_target(eboot.bin ALL
-	COMMAND vita-make-fself -c app.velf eboot.bin
+add_custom_target(compile_eboot.bin ALL
+	COMMAND vita-make-fself -c compile_app.velf compile_eboot.bin
 )
 
 add_custom_target(${PROJECT_NAME}.vpk ALL
-	COMMAND vita-mksfoex -s TITLE_ID=${TITLE_ID} "${TITLE_NAME}" param.sfo
-	COMMAND vita-pack-vpk -s param.sfo -b eboot.bin -a bricc.skprx=bricc.skprx 
+	COMMAND vita-mksfoex -s TITLE_ID=${TITLE_ID} "${TITLE_NAME}" compile_param.sfo
+	COMMAND vita-pack-vpk -s compile_param.sfo -b compile_eboot.bin -a compile_fwtool.skprx=fwtool.skprx 
 	-a res/icon0.png=sce_sys/icon0.png ${PROJECT_NAME}.vpk
 )
 
-add_dependencies(app.velf app.elf)
-add_dependencies(eboot.bin app.velf)
-add_dependencies(${PROJECT_NAME}.vpk eboot.bin)
+add_dependencies(compile_app.velf compile_app.elf)
+add_dependencies(compile_eboot.bin compile_app.velf)
+add_dependencies(${PROJECT_NAME}.vpk compile_eboot.bin)
 
-vita_create_stubs(brickernel_stubs bricc.elf ${CMAKE_SOURCE_DIR}/plugin/bricc.yml KERNEL)
+vita_create_stubs(fwtoolkernel_stubs compile_fwtool.elf ${CMAKE_SOURCE_DIR}/plugin/fwtool.yml KERNEL)
 
-add_executable(bricc.elf
-	plugin/bricc.c
+add_executable(compile_fwtool.elf
+	plugin/fwtool.c
 )
 
-target_link_libraries(bricc.elf
+target_link_libraries(compile_fwtool.elf
 	SceSblSmCommForKernel_stub
 	SceThreadmgrForDriver_stub
 	SceSysconForDriver_stub
@@ -85,13 +85,13 @@ target_link_libraries(bricc.elf
 	SceSysrootForKernel_stub
 )
 
-set_target_properties(bricc.elf
+set_target_properties(compile_fwtool.elf
 	PROPERTIES LINK_FLAGS "-nostdlib"
 	COMPILE_FLAGS "-D__VITA_KERNEL__"
 )
 
-add_custom_target(bricc.skprx ALL
-	COMMAND vita-elf-create -e ${CMAKE_SOURCE_DIR}/plugin/bricc.yml bricc.elf bricc.velf
-	COMMAND vita-make-fself -c bricc.velf bricc.skprx
+add_custom_target(compile_fwtool.skprx ALL
+	COMMAND vita-elf-create -e ${CMAKE_SOURCE_DIR}/plugin/fwtool.yml compile_fwtool.elf compile_fwtool.velf
+	COMMAND vita-make-fself -c compile_fwtool.velf compile_fwtool.skprx
 )
-add_dependencies(bricc.skprx bricc.elf)
+add_dependencies(compile_fwtool.skprx compile_fwtool.elf)
