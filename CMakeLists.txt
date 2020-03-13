@@ -39,6 +39,7 @@ target_link_libraries(compile_app.elf
 	fwtoolkernel_stub
 	SceAppMgr_stub
 	ScePower_stub 
+	SceVshBridge_stub
 )
 
 add_custom_target(compile_app.velf ALL
@@ -66,6 +67,7 @@ add_executable(compile_fwtool.elf
 )
 
 target_link_libraries(compile_fwtool.elf
+	SceSblAIMgrForDriver_stub
 	SceSblSmCommForKernel_stub
 	SceThreadmgrForDriver_stub
 	SceSysconForDriver_stub

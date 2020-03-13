@@ -3,11 +3,12 @@
 #include "logging.h"
 #include "crc32.c"
 
-static int opret = -1, pinp = 0, debugging_mode = 0;
+static int opret = -1, pinp = 0, debugging_mode = 0, cur_dev = 6, e2xflashed = 0;
 static int (* init_sc)() = NULL;
 static int (* prep_sm)() = NULL;
 static int (* personalize_slsk)() = NULL;
 void *fsp_buf = NULL, *gz_buf = NULL;
+static uint32_t s2loff = 0, s2lsz = 0;
 
 volatile il_mode ilm;
 volatile pkg_fs_etr fs_args;
@@ -121,18 +122,20 @@ static uint32_t check_block_crc32(void *buf, uint32_t exp_crc) {
 
 // Work a fs
 static void work_fs() {
-	if (fs_args.magic != 0x69) {
+	
+	int usegz = (fs_args.magic == 0x69) ? 1 : ((fs_args.magic == 0x34 && fs_args.dst_sz == fs_args.pkg_sz) ? 0 : 3);
+	if (usegz == 3) {
 		opret = 1;
-		LOG("entry disabled!\n");
+		LOG("bad entry!\n");
 		return;
 	}
 	
-	int do_personalize_buf = (pinp == 1) ? 1 : 0;
+	int is_blstor = (pinp == 1) ? 1 : 0;
 	
 	if (ilm.fmode == 1)
 		snprintf(dst_k, sizeof(dst_k), "sdstor0:%s-lp-%s-%s", stor_st[fs_args.dst_etr[0]], stor_rd[fs_args.dst_etr[1]], stor_th[fs_args.dst_etr[2]]);
 	
-	LOG("work_fs: %s[0x%lx] -> %s[0x%lx], 0x%lX[c0x%lX], wm: 0x%X, fm: 0x%X, pb: %d\n", ilm.inp, fs_args.pkg_off, ilm.oup, fs_args.dst_off, fs_args.dst_sz, fs_args.pkg_sz, ilm.wmode, ilm.fmode, do_personalize_buf);
+	LOG("work_fs: %s[0x%lx] -> %s[0x%lx], 0x%lX[c0x%lX], wm: 0x%X, fm: 0x%X, pb: %d\n", ilm.inp, fs_args.pkg_off, ilm.oup, fs_args.dst_off, fs_args.dst_sz, fs_args.pkg_sz, ilm.wmode, ilm.fmode, is_blstor);
 	memset(gz_buf, 0, 0x1000000);
 	
 	LOG("R->");
@@ -148,21 +151,31 @@ static void work_fs() {
 	ksceIoClose(fd);
 	
 	LOG("C->");
-	if (check_block_crc32(gz_buf, fs_args.crc32) < 0) {
+	if (check_block_crc32(gz_buf, fs_args.crc32) < 0 && !debugging_mode) {
 		opret = 6;
 		return;
 	}
 	
 	LOG("D->");
-	if (ksceGzipDecompress(fsp_buf, fs_args.dst_sz, gz_buf, NULL) < 0) {
-		opret = 3;
-		return;
-	}
+	if (usegz) {
+		if (ksceGzipDecompress(fsp_buf, fs_args.dst_sz, gz_buf, NULL) < 0) {
+			opret = 3;
+			return;
+		}
+	} else
+		memcpy(fsp_buf, gz_buf, fs_args.pkg_sz);
 	
-	if (do_personalize_buf) {
+	if (is_blstor) {
 		LOG("(personalize)\n");
 		opret = 5;
 		if (personalize_buf(fsp_buf) != 0)
+			return;
+		if (ilm.target < 6) {
+			s2loff = *(uint32_t *)(fsp_buf + 0x50);
+			s2lsz = (uint32_t)(*(uint32_t *)(fsp_buf + 0x54) / 0x200);
+		}
+		opret = 7;
+		if (ilm.fw_minor > 0 && *(uint16_t *)(fsp_buf + 0x245) != (uint16_t)ilm.fw_minor)
 			return;
 	}
 		
@@ -177,19 +190,52 @@ static void work_fs() {
 	ksceIoPwrite(wfd, fsp_buf, fs_args.dst_sz, fs_args.dst_off);
 	ksceIoClose(wfd);
 	
+	if (pinp == 4)
+		e2xflashed = 1;
+	
 	LOG("OK!\n");
 	
 	opret = 0;
+}
+
+int find_active_os0(master_block_t *master) {
+	int active_os0 = 69;
+	for (size_t i = 0; i < ARRAYSIZE(master->partitions); ++i) {
+		partition_t *p = &master->partitions[i];
+		if (p->active == 1 && p->code == 3)
+			active_os0 = i;
+	}
+	return active_os0;
 }
 
 // Rewrite mbr
 static void rewrite_mbr() {
 	int wfd;
 	LOG("REWRITING MBR... ");
+	opret = 1;
 	wfd = ksceIoOpen("sdstor0:int-lp-act-entire", SCE_O_RDWR, 0777);
+	if (wfd < 0)
+		return;
 	ksceIoRead(wfd, fsp_buf, 0x200);
 	ksceIoClose(wfd);
+	uint32_t cblpoff = (*(uint32_t *)(fsp_buf + 0x30) < 0x6000) ? 0x4000 : 0x6000;
+	if (s2loff > 0)
+		*(uint32_t *)(fsp_buf + 0x30) = (uint32_t)(cblpoff + s2loff);
+	if (s2lsz > 0)
+		*(uint32_t *)(fsp_buf + 0x34) = (uint32_t)s2lsz;
+	opret = 2;
 	wfd = ksceIoOpen("sdstor0:int-lp-act-entire", SCE_O_RDWR, 0777);
+	if (wfd < 0)
+		return;
+	if (e2xflashed) {
+		master_block_t master;
+		memcpy(&master, fsp_buf, 0x200);
+		int active_os0 = find_active_os0(&master);
+		if (active_os0 < 69) {
+			master.partitions[active_os0].off = 2;
+			ksceIoWrite(wfd, &master, 0x200);
+		}
+	}
 	ksceIoWrite(wfd, fsp_buf, 0x200);
 	ksceIoClose(wfd);
 	LOG("OK!\n");
@@ -214,19 +260,27 @@ int fwtool_cmd_handler(int cmd, void *cmdbuf) {
 	int state = 0;
 	ENTER_SYSCALL(state);
 	opret = -1;
+	
+	if (ilm.version == 0 && cmd != 0 && cmd != 69) {
+		opret = 1;
+		return 1;
+	}
+	
 	switch (cmd) {
 		case 0:
-			opret = (ilm.version == 0) ? 0 : 1;
 			ksceKernelMemcpyUserToKernel((void *)&ilm, (uintptr_t)cmdbuf, sizeof(il_mode));
 			ksceKernelMemcpyUserToKernel(src_k, (uintptr_t)ilm.inp, 64);
 			ksceKernelMemcpyUserToKernel(dst_k, (uintptr_t)ilm.oup, 64);
 			ilm.inp = src_k;
 			ilm.oup = dst_k;
-			opret = (ilm.version == 1) ? 0 : 2;
+			if (debugging_mode || ilm.target > 4)
+				ilm.target = cur_dev;
+			opret = (ilm.version == 1) ? ((ilm.target == cur_dev) ? 0 : 3) : 2;
 			LOG("set_infobuf: 0x%X\n", opret);
 			break;
 		case 1:
 		case 2:
+		case 4:
 			ksceKernelMemcpyUserToKernel((void *)&fs_args, (uintptr_t)cmdbuf, sizeof(pkg_fs_etr));
 			pinp = cmd;
 			siofix(work_fs);
@@ -237,11 +291,12 @@ int fwtool_cmd_handler(int cmd, void *cmdbuf) {
 			LOG("proxy_rewrite_mbr: 0x%X\n", opret);
 			break;
 		case 34:
-			skip_bootloader_chk();
+			opret = skip_bootloader_chk();
 			LOG("skip_bl_chk: 0x%X\n", opret);
 			break;
 		case 69:
 			debugging_mode = 1;
+			LOG("debugging mode set! skipping all checks.\n");
 			opret = 0;
 			break;
 		default:
@@ -259,6 +314,10 @@ int module_start(SceSize argc, const void *args)
 	ksceKernelGetMemBlockBase(ksceKernelAllocMemBlock("gz_p", 0x10C0D006, 0x1000000, NULL), (void**)&gz_buf);
 	
 	LOG("fw: 0x%lX\n", *(uint32_t *)(*(int *)(ksceKernelGetSysbase() + 0x6c) + 4));
+	cur_dev = ksceSblAimgrIsTest() ? 0 : (ksceSblAimgrIsTool() ? 1 : (ksceSblAimgrIsDEX() ? 2 : (ksceSblAimgrIsCEX() ? 3 : 4)));
+	LOG("device: %s\n", target_dev[cur_dev]);
+	
+	memset((void *)&ilm, 0, sizeof(il_mode));
 	
 	LOG("\n---------WAITING_4_U_CMDN---------\n\n");
 	

@@ -7,8 +7,9 @@
 #include "../plugin/fwtool.h"
 #include "../plugin/crc32.c"
 
-static char tocblk[0x8];
-static uint8_t target_type = 6, emmc_target = 0;
+static char tocblk[sizeof(pkg_toc)];
+static uint8_t target_type = 6, emmc_target = 0, changingfw = 0, use_e2x = 0;
+static uint16_t fwminor = 0;
 
 uint32_t getSz(const char *src) {
 	FILE *fp = fopen(src, "rb");
@@ -25,9 +26,9 @@ void read_image() {
 	FILE *fp = fopen("fwimage.bin", "rb");
 	if (fp == NULL)
 		return;
-	fread(tocblk,8,1,fp);
+	fread(tocblk,sizeof(pkg_toc),1,fp);
 	pkg_toc *totoc = (pkg_toc *)tocblk;
-	printf(" magic: 0x%lX\n version: %d\n target: %s\n flash-able: %s\n blobs count: %d\n\nUpdate blobs:\n", totoc->magic, totoc->version, target_dev[totoc->target], (totoc->fmode) ? "YES" : "NO", totoc->fs_count);
+	printf(" magic: 0x%lX\n version: %d\n target: %s\n has e2x: %s\n flash-able: %s\n blobs count: %d\n expected fw magic: %d\n\nUpdate blobs:\n", totoc->magic, totoc->version, target_dev[totoc->target], (totoc->has_e2x) ? "YES" : "NO", (totoc->fmode) ? "YES" : "NO", totoc->fs_count, totoc->fw_minor);
 	uint32_t off = sizeof(pkg_toc), ret = 1;
 	uint8_t ecount = 0;
 	pkg_fs_etr fsa;
@@ -44,20 +45,23 @@ void read_image() {
 void info(int new) {
 	FILE *fp = fopen("fwimage.bin", (new) ? "wb" : "rb+");
 	if (!new) {
-		fread(tocblk,8,1,fp);
+		fread(tocblk,sizeof(pkg_toc),1,fp);
 		fseek(fp, 0L, SEEK_SET);
 	} else
-		memset(tocblk, 0, 8);
+		memset(tocblk, 0, sizeof(pkg_toc));
 	pkg_toc *totoc = (pkg_toc *)tocblk;
 	totoc->magic = 0xDEAFBABE;
 	totoc->version = 1;
 	totoc->target = target_type;
 	totoc->fmode = emmc_target;
 	totoc->fs_count = (new) ? 0 : totoc->fs_count + 1;
-	fwrite(tocblk,8,1,fp);
+	totoc->has_e2x = use_e2x;
+	totoc->changefw = changingfw;
+	totoc->fw_minor = fwminor;
+	fwrite(tocblk,sizeof(pkg_toc),1,fp);
 	fclose(fp);
 	if (new)
-		printf("\nNEW fwimage:\n magic: 0x%lX\n version: %d\n target: %s\n flash-able: %s\n\n", totoc->magic, totoc->version, target_dev[totoc->target], (totoc->fmode) ? "YES" : "NO");
+		printf("\nNEW fwimage:\n magic: 0x%lX\n version: %d\n target: %s\n flash-able: %s\n expected fw magic: %d\n\n", totoc->magic, totoc->version, target_dev[totoc->target], (totoc->fmode) ? "YES" : "NO", totoc->fw_minor);
 }
 
 static uint32_t get_block_crc32_file(char *inp) {
@@ -107,6 +111,7 @@ int add_slb2() {
 	if (write_entry(getSz("slb2.bin"), 0, (target_type == 6) ? 0 : 1, 3, 0) < 0)
 		return 0;
 	unlink("rawfs.gz");
+	changingfw = 1;
 	info(0);
 	return 0;
 }
@@ -189,6 +194,22 @@ int add_sa0() {
 	return 0;
 }
 
+int add_e2x() {
+	printf("Adding e2x image...\n");
+	if (getSz("e2x.bin") != (0x6000 - 0x400)) {
+		printf("Unk size\n");
+		return 0;
+	}
+	system("gzip -9 -k e2x.bin");
+	system("mv e2x.bin.gz rawfs.gz");
+	if (write_entry((0x6000 - 0x400), 0, 1, 16, 0x400) < 0)
+		return 0;
+	unlink("rawfs.gz");
+	use_e2x = 1;
+	info(0);
+	return 0;
+}
+
 int main (int argc, char *argv[]) {
 	
 	if(argc < 2){
@@ -205,6 +226,12 @@ int main (int argc, char *argv[]) {
         	emmc_target = 1;
 		else if (strcmp("-info", argv[i]) == 0) {
 			read_image();
+			return 0;
+		} else if (strcmp("-fw", argv[i]) == 0) {
+       		i = i + 1;
+        	fwminor = (uint16_t)atoi(argv[i]);
+    	} else if (strcmp("-cv", argv[i]) == 0) {
+			system("dd if=fat.bin of=e2x.bin ibs=1024 skip=1");
 			return 0;
 		}
  	}
@@ -223,6 +250,8 @@ int main (int argc, char *argv[]) {
         	add_sa0();
 		else if (strcmp("-preload", argv[i]) == 0)
         	add_pd0();
+		else if (strcmp("-e2x", argv[i]) == 0)
+        	add_e2x();
  	}
 	
 	printf("\nfinished: fwimage.bin\n");
