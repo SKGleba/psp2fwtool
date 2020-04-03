@@ -10,7 +10,7 @@ endif()
 
 project(FWTOOL)
 set(TITLE_ID "SKGFWT00L")
-set(TITLE_NAME "fwtool")
+set(TITLE_NAME "FWTOOL@PSP2")
 
 include("${VITASDK}/share/vita.cmake" REQUIRED)
 
@@ -54,6 +54,9 @@ add_custom_target(${PROJECT_NAME}.vpk ALL
 	COMMAND vita-mksfoex -s TITLE_ID=${TITLE_ID} "${TITLE_NAME}" compile_param.sfo
 	COMMAND vita-pack-vpk -s compile_param.sfo -b compile_eboot.bin -a compile_fwtool.skprx=fwtool.skprx 
 	-a res/icon0.png=sce_sys/icon0.png ${PROJECT_NAME}.vpk
+	-a res/template.xml=sce_sys/livearea/contents/template.xml
+	-a res/bg.png=sce_sys/livearea/contents/bg.png
+	-a res/startup.png=sce_sys/livearea/contents/startup.png
 )
 
 add_dependencies(compile_app.velf compile_app.elf)

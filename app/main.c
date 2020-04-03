@@ -1,7 +1,3 @@
-/*
- * Simple kplugin loader by xerpi
- */
-
 #include <stdio.h>
 #include <stdlib.h> 
 #include <taihen.h>
@@ -13,6 +9,12 @@
 #define MOD_PATH "ux0:app/SKGFWT00L/fwtool.skprx"
 	
 #define printf(...) psvDebugScreenPrintf(__VA_ARGS__)
+#define COLORPRINTF(color, ...)		\
+do {                                \
+	psvDebugScreenSetFgColor(color);\
+	psvDebugScreenPrintf(__VA_ARGS__);\
+	psvDebugScreenSetFgColor(COLOR_WHITE);\
+} while (0)
 
 extern int fwtool_cmd_handler(int cmd, void *cmdbuf);
 
@@ -23,38 +25,30 @@ volatile pkg_fs_etr fs_args;
 void wait_key_press(int mode)
 {
 	SceCtrlData pad;
-
-	printf("Press CROSS to %s.\n", (mode) ? "flash" : "reboot");
-
+	COLORPRINTF(COLOR_YELLOW, "Press %s.\n", (mode) ? "CROSS to flash or CIRCLE to exit" : "CIRCLE to reboot");
 	while (1) {
 		sceCtrlPeekBufferPositive(0, &pad, 1);
-		if (pad.buttons & SCE_CTRL_CROSS)
+		if (pad.buttons & SCE_CTRL_CIRCLE) {
+			if (mode)
+				sceKernelExitProcess(0);
+			else
+				scePowerRequestColdReset();
+		}
+		if ((pad.buttons & SCE_CTRL_CROSS) && mode == 1)
 			break;
-		if ((pad.buttons & SCE_CTRL_TRIANGLE) && (pad.buttons & SCE_CTRL_SELECT))
+		if ((pad.buttons & SCE_CTRL_TRIANGLE) && (pad.buttons & SCE_CTRL_SELECT)) {
 			fwtool_cmd_handler(69, NULL);
+			COLORPRINTF(COLOR_GREEN, "debugging mode set\n");
+		}
 		sceKernelDelayThread(200 * 1000);
 	}
 }
 
 void erroff() {
-	printf("ERR_REQ_OFF\n");
+	COLORPRINTF(COLOR_RED, "ERR_REQ_OFF\n");
 	wait_key_press(0);
 	scePowerRequestColdReset();
 }
-
-void blank_xd() {
-	void *buf = malloc(0x100);
-	vshIoUmount(0x200, 0, 0, 0);
-	vshIoUmount(0x200, 1, 0, 0);
-	_vshIoMount(0x200, 0, 2, buf);
-	char blankxd[0x200];
-	memset(&blankxd, 0, sizeof(blankxd));
-	*(uint32_t *)blankxd = 0xCAFEBABE;
-	int fd = sceIoOpen("os0:patches.e2xd", SCE_O_WRONLY | SCE_O_TRUNC | SCE_O_CREAT, 6);
-	sceIoWrite(fd, &blankxd, 0x200);
-	sceIoClose(fd);
-}
-	
 
 int flashloop() {
 	SceUID fd;
@@ -76,7 +70,7 @@ int flashloop() {
 		} else
 			ret = 14;
 		if (ret != 0) {
-			printf("error: 0x1\n");
+			COLORPRINTF(COLOR_RED, "error: 0x1\n");
 			erroff();
 			return 1;
 		}
@@ -105,12 +99,43 @@ int set_infobuf(uint8_t write_mode) {
 	ilm.fw_minor = rtoc.fw_minor;
 	int ret = fwtool_cmd_handler(0, (void *)&ilm);
 	if (ret != 0) {
-		printf("error: 0x%X\n", ret);
+		COLORPRINTF(COLOR_RED, "error: 0x%X\n", ret);
 		erroff();
 		return 2;
 	}
-	printf("ok!\n");
+	COLORPRINTF(COLOR_BLUE, "ok!\n");
 	return ret;
+}
+
+int show_info() {
+	pkg_toc totoc;
+	SceUID fd = sceIoOpen("ux0:data/fwtool/fwimage.bin", SCE_O_RDONLY, 0);
+	if (fd >= 0) {
+		sceIoRead(fd, (void *)&totoc, sizeof(pkg_toc));
+		sceIoClose(fd);
+	} else {
+		COLORPRINTF(COLOR_RED, "could NOT open ux0:data/fwtool/fwimage.bin\n");
+		return 1;
+	}
+	psvDebugScreenSetFgColor(COLOR_CYAN);
+	COLORPRINTF(COLOR_CYAN, "\npackage location: ");
+	printf("ux0:data/fwtool/fwimage.bin\n\n");
+	COLORPRINTF(COLOR_CYAN, "package info:\n");
+	printf(" version: %d\n target: %s\n has e2x: %s\n bootloaders magic: %d [0x%04X]\n\n", totoc.version, target_dev[totoc.target], (totoc.has_e2x) ? "YES" : "NO", totoc.fw_minor, totoc.fw_minor);
+	COLORPRINTF(COLOR_CYAN, "package contents:\n");
+	uint32_t off = sizeof(pkg_toc);
+	uint8_t ecount = 0;
+	pkg_fs_etr fsa;
+	fd = sceIoOpen("ux0:data/fwtool/fwimage.bin", SCE_O_RDONLY, 0);
+	while (ecount < totoc.fs_count) {
+		sceIoPread(fd, (void *)&fsa, sizeof(pkg_fs_etr), off);
+		printf(" %d: sdstor0:%s-lp-%s-%s @ %d [%d]\n", ecount, stor_st[fsa.dst_etr[0]], stor_rd[fsa.dst_etr[1]], stor_th[fsa.dst_etr[2]], fsa.dst_off, fsa.dst_sz);
+		ecount = ecount + 1;
+		off = fsa.pkg_off + fsa.pkg_sz;
+	}
+	sceIoClose(fd);
+	printf("\n");
+	return 0;
 }
 
 int main(int argc, char *argv[])
@@ -118,7 +143,7 @@ int main(int argc, char *argv[])
 	int ret;
 	SceUID mod_id;
 	psvDebugScreenInit();
-	printf("FWTOOL v0.4\n");
+	COLORPRINTF(COLOR_CYAN, "FWTOOL v0.5 by SKGleba\n");
 	printf("\nLoading KModule...\n");
 	tai_module_args_t argg;
 	argg.size = sizeof(argg);
@@ -127,15 +152,17 @@ int main(int argc, char *argv[])
 	argg.argp = NULL;
 	argg.flags = 0;
 	mod_id = taiLoadStartKernelModuleForUser(MOD_PATH, &argg);
-
 	if (mod_id > 0)
 		sceAppMgrLoadExec("app0:eboot.bin", NULL, NULL);
 	else {
+		if (show_info() == 1)
+			erroff();
 		wait_key_press(1);
-		printf("\n---------STAGE 1: SET_NFO---------\n\n");
+		psvDebugScreenClear(COLOR_BLACK);
+		COLORPRINTF(COLOR_CYAN, "\n---------STAGE 1: SET_NFO---------\n\n");
 		ret = set_infobuf(1);
 		if (ret != 0) {
-			printf("error: 0x%X\n", ret);
+			COLORPRINTF(COLOR_RED, "error: 0x%X\n", ret);
 			erroff();
 			return 0;
 		}
@@ -143,45 +170,42 @@ int main(int argc, char *argv[])
 		printf("WRITE_EMMC: %s\n", (ilm.fmode) ? "YES" : "NO");
 		printf("TARGET_TYPE: %s\n", target_dev[ilm.target]);
 		if (ilm.target != 6 && rtoc.changefw == 1) {
-			printf("\n---------STAGE 2: SC_INIT---------\n\n");
+			COLORPRINTF(COLOR_CYAN, "\n---------STAGE 2: SC_INIT---------\n\n");
 			printf("Changing SNVS firmware...");
 			ret = fwtool_cmd_handler(34, NULL);
 			if (ret != 0) {
-				printf("error: 0x%X\n", ret);
+				COLORPRINTF(COLOR_RED, "error: 0x%X\n", ret);
 				erroff();
 				return 0;
 			}
-			printf("ok!\n");
-			printf("\n---------STAGE 3: CLEANFS---------\n\n");
+			COLORPRINTF(COLOR_BLUE, "ok!\n");
+			COLORPRINTF(COLOR_CYAN, "\n---------STAGE 3: CLEANFS---------\n\n");
 			ret = fwtool_cmd_handler(3, NULL);
 			if (ret != 0) {
-				printf("error: 0x%X\n", ret);
+				COLORPRINTF(COLOR_RED, "error: 0x%X\n", ret);
 				erroff();
 				return 0;
 			}
-			printf("MBR is now clean\n");
+			COLORPRINTF(COLOR_BLUE, "MBR is now clean\n");
 		}
-		printf("\n---------STAGE 420: FLASH---------\n\n");
+		COLORPRINTF(COLOR_CYAN, "\n---------STAGE 420: FLASH---------\n\n");
 		ret = flashloop();
 		if (ret != 0) {
-			printf("error: 0x%X\n", ret);
+			COLORPRINTF(COLOR_RED, "error: 0x%X\n", ret);
 			erroff();
 			return 0;
 		}
 		if (ilm.target != 6 && rtoc.has_e2x == 1) {
-			printf("\n---------STAGE 666: ++E2X---------\n\n");
+			COLORPRINTF(COLOR_CYAN, "\n---------STAGE 666: ++E2X---------\n\n");
 			ret = fwtool_cmd_handler(3, NULL);
 			if (ret != 0) {
-				printf("error: 0x%X\n", ret);
+				COLORPRINTF(COLOR_RED, "error: 0x%X\n", ret);
 				erroff();
 				return 0;
 			}
-			printf("MBR now points to fake os0\n");
-			blank_xd();
-			printf("e2x installed\n");
-			
+			COLORPRINTF(COLOR_BLUE, "MBR now points to fake os0\ne2x installed\n");
 		}
-		printf("\nALL DONE, rebooting in 5s\n");
+		COLORPRINTF(COLOR_CYAN, "\nALL DONE, rebooting in 5s\n");
 		sceKernelDelayThread(5 * 1000 * 1000);
 		if (ilm.target != 6)
 			sceIoRemove("ux0:id.dat");

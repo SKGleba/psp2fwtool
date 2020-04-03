@@ -61,7 +61,7 @@ void info(int new) {
 	fwrite(tocblk,sizeof(pkg_toc),1,fp);
 	fclose(fp);
 	if (new)
-		printf("\nNEW fwimage:\n magic: 0x%lX\n version: %d\n target: %s\n flash-able: %s\n expected fw magic: %d\n\n", totoc->magic, totoc->version, target_dev[totoc->target], (totoc->fmode) ? "YES" : "NO", totoc->fw_minor);
+		printf("\nNEW fwimage:\n magic: 0x%lX\n version: %d\n target: %s\n has e2x: %s\n flash-able: %s\n expected fw magic: %d\n\n", totoc->magic, totoc->version, target_dev[totoc->target], (totoc->has_e2x) ? "YES" : "NO", (totoc->fmode) ? "YES" : "NO", totoc->fw_minor);
 }
 
 static uint32_t get_block_crc32_file(char *inp) {
@@ -195,7 +195,7 @@ int add_sa0() {
 }
 
 int add_e2x() {
-	printf("Adding e2x image...\n");
+	printf("Adding e2x image\n");
 	if (getSz("e2x.bin") != (0x6000 - 0x400)) {
 		printf("Unk size\n");
 		return 0;
@@ -207,6 +207,18 @@ int add_e2x() {
 	unlink("rawfs.gz");
 	use_e2x = 1;
 	info(0);
+	return 0;
+}
+
+int fat2e2x() {
+	unlink("e2x.bin");
+	printf("Creating e2x image from fat.bin\n");
+	system("dd if=fat.bin of=e2x.bin ibs=1024 skip=1");
+	if (getSz("e2x.bin") != (0x6000 - 0x400)) {
+		printf("Unk size\n");
+		return -1;
+	}
+	use_e2x = 1;
 	return 0;
 }
 
@@ -229,12 +241,14 @@ int main (int argc, char *argv[]) {
 			return 0;
 		} else if (strcmp("-fw", argv[i]) == 0) {
        		i = i + 1;
-        	fwminor = (uint16_t)atoi(argv[i]);
-    	} else if (strcmp("-cv", argv[i]) == 0) {
-			system("dd if=fat.bin of=e2x.bin ibs=1024 skip=1");
-			return 0;
+        	fwminor = (uint16_t)strtol(argv[i] + 2, NULL, 16);
+    	} else if (strcmp("-e2x", argv[i]) == 0) {
+			if (fat2e2x() < 0)
+				return 0;
 		}
  	}
+	
+	unlink("fwimage.bin");
 	
 	info(1);
   
