@@ -4,17 +4,14 @@
 #include "crc32.c"
 
 static int opret = -1, pinp = 0, debugging_mode = 0, cur_dev = 6, e2xflashed = 0;
-static int (* init_sc)() = NULL;
-static int (* prep_sm)() = NULL;
-static int (* personalize_slsk)() = NULL;
+static int (* init_sc)() = NULL, (* prep_sm)() = NULL, (* personalize_slsk)() = NULL;
 void *fsp_buf = NULL, *gz_buf = NULL;
 static uint32_t s2loff = 0, s2lsz = 0;
 
 volatile il_mode ilm;
 volatile pkg_fs_etr fs_args;
 
-static char src_k[64];
-static char dst_k[64];
+static char src_k[64], dst_k[64];
 
 // BYPASS1: Skip firmware ver checks on bootloaders 0xdeadbeef
 // TODO: proper RE, its EZ
@@ -80,7 +77,7 @@ static int skip_pm_chk(void) {
 		arg0 = 0xFFFFFFFF; // some boot flags-bit 1 LB skips fw checks on bl2
 		arg1 = 0xFFFFFFFF; // PM type(s)
 		LOG("calling pset_pm 0x%lX, 0x%lX, 0x%X... ", arg0, arg1, 7);
-		ret = pset_pm(&arg0, &arg1, 7); // set PMx2 release; NOTE: setting manu requires JIG; VULN: input is not checked - can set anyways
+		ret = pset_pm(&arg0, &arg1, 7); // set PMx2 release; NOTE: setting manu requires JIG; VULN: (on =<3.73) input is not checked - can set anyways
 		LOG("ret 0x%X\n", ret);
 		ret = pget_pm(&arg0, &arg1); // get PMx2 again
 		LOG("get 0x%lX, 0x%lX\n", arg0, arg1);
