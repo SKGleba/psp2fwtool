@@ -3,13 +3,10 @@
 #include <stdlib.h>
 #include <inttypes.h>
 #include <stdint.h>
+#include <fcntl.h>
 
 #include "../plugin/fwtool.h"
 #include "../plugin/crc32.c"
-
-static char tocblk[sizeof(pkg_toc)];
-static uint8_t target_type = 6, emmc_target = 0, changingfw = 0, use_e2x = 0;
-static uint16_t fwminor = 0;
 
 uint32_t getSz(const char *src) {
 	FILE *fp = fopen(src, "rb");
@@ -21,193 +18,12 @@ uint32_t getSz(const char *src) {
 	return sz;
 }
 
-void read_image() {
-	printf("\nImage info:\n size: %dB\n", getSz("fwimage.bin"));
-	FILE *fp = fopen("fwimage.bin", "rb");
-	if (fp == NULL)
-		return;
-	fread(tocblk,sizeof(pkg_toc),1,fp);
-	pkg_toc *totoc = (pkg_toc *)tocblk;
-	printf(" magic: 0x%lX\n version: %d\n target: %s\n has e2x: %s\n flash-able: %s\n blobs count: %d\n expected fw magic: %d\n\nUpdate blobs:\n", totoc->magic, totoc->version, target_dev[totoc->target], (totoc->has_e2x) ? "YES" : "NO", (totoc->fmode) ? "YES" : "NO", totoc->fs_count, totoc->fw_minor);
-	uint32_t off = sizeof(pkg_toc), ret = 1;
-	uint8_t ecount = 0;
-	pkg_fs_etr fsa;
-	while (ecount < totoc->fs_count) {
-		fseek(fp, off, SEEK_SET);
-		fread((void *)&fsa,sizeof(pkg_fs_etr),1,fp);
-		printf(" magic: 0x%02X\n fwimage offset: %d\n compressed size: %d\n target device: sdstor0:%s-lp-%s-%s\n device offset: %d\n final size: %d\n crc32: 0x%lX\n\n", fsa.magic, fsa.pkg_off, fsa.pkg_sz, stor_st[fsa.dst_etr[0]], stor_rd[fsa.dst_etr[1]], stor_th[fsa.dst_etr[2]], fsa.dst_off, fsa.dst_sz, fsa.crc32);
-		ecount = ecount + 1;
-		off = fsa.pkg_off + fsa.pkg_sz;
-	}
-	
-}
-
-void info(int new) {
-	FILE *fp = fopen("fwimage.bin", (new) ? "wb" : "rb+");
-	if (!new) {
-		fread(tocblk,sizeof(pkg_toc),1,fp);
-		fseek(fp, 0L, SEEK_SET);
-	} else
-		memset(tocblk, 0, sizeof(pkg_toc));
-	pkg_toc *totoc = (pkg_toc *)tocblk;
-	totoc->magic = 0xDEAFBABE;
-	totoc->version = 1;
-	totoc->target = target_type;
-	totoc->fmode = emmc_target;
-	totoc->fs_count = (new) ? 0 : totoc->fs_count + 1;
-	totoc->has_e2x = use_e2x;
-	totoc->changefw = changingfw;
-	totoc->fw_minor = fwminor;
-	fwrite(tocblk,sizeof(pkg_toc),1,fp);
-	fclose(fp);
-	if (new)
-		printf("\nNEW fwimage:\n magic: 0x%lX\n version: %d\n target: %s\n has e2x: %s\n flash-able: %s\n expected fw magic: %d\n\n", totoc->magic, totoc->version, target_dev[totoc->target], (totoc->has_e2x) ? "YES" : "NO", (totoc->fmode) ? "YES" : "NO", totoc->fw_minor);
-}
-
 static uint32_t get_block_crc32_file(char *inp) {
 	char crcbuf[0x200];
 	FILE *fp = fopen(inp, "rb");
 	fread(&crcbuf,0x200,1,fp);
 	fclose(fp);
 	return crc32(0, &crcbuf, 0x200);;
-}
-
-int write_entry(uint32_t dst_sz, uint8_t master, uint8_t active, uint8_t partition, uint32_t dst_off) {
-	if (dst_sz == 0)
-		return -1;
-	pkg_fs_etr fs_etr;
-	fs_etr.magic = 0x69;
-	fs_etr.pkg_off = getSz("fwimage.bin") + sizeof(pkg_fs_etr);
-	fs_etr.pkg_sz = getSz("rawfs.gz");
-	fs_etr.dst_etr[0] = master;
-	fs_etr.dst_etr[1] = active;
-	fs_etr.dst_etr[2] = partition;
-	fs_etr.dst_off = dst_off;
-	fs_etr.dst_sz = dst_sz;
-	fs_etr.crc32 = get_block_crc32_file("rawfs.gz");
-	FILE *fp = fopen("fwimage.bin", "rb+");
-	fseek(fp, 0L, SEEK_END);
-	fwrite((void *)&fs_etr, sizeof(pkg_fs_etr), 1, fp);
-	fclose(fp);
-	system("cat rawfs.gz >> fwimage.bin");;
-	return 0;
-}
-
-int add_os0() {
-	printf("Adding kernel image...\n");
-	system("gzip -9 -k os0.bin");
-	system("mv os0.bin.gz rawfs.gz");
-	if (write_entry(getSz("os0.bin"), 0, (target_type == 6) ? 0 : 1, 4, 0) < 0)
-		return 0;
-	unlink("rawfs.gz");
-	info(0);
-	return 0;
-}
-
-int add_slb2() {
-	printf("Adding bootloaders image...\n");
-	system("gzip -9 -k slb2.bin");
-	system("mv slb2.bin.gz rawfs.gz");
-	if (write_entry(getSz("slb2.bin"), 0, (target_type == 6) ? 0 : 1, 3, 0) < 0)
-		return 0;
-	unlink("rawfs.gz");
-	changingfw = 1;
-	info(0);
-	return 0;
-}
-
-int add_vs0() {
-	printf("Adding system image...\n");
-	uint32_t coff = 0;
-	uint8_t cur = 0;
-	char cfname[64], mvcmd[128];
-	system("split -b 16777216 -d vs0.bin vs0.bin_");
-	system("gzip -9 -k vs0.bin_*");
-	while(1) {
-		memset(cfname, 0, 16);
-		memset(mvcmd, 0, 128);
-		sprintf(cfname, "vs0.bin_%02d", cur);
-		coff = getSz(cfname);
-		if (coff == 0)
-			break;
-		sprintf(mvcmd, "mv %s.gz rawfs.gz", cfname);
-		system(mvcmd);
-		if (write_entry(coff, 0, 2, 5, cur * 0x1000000) < 0)
-			break;
-		unlink("rawfs.gz");
-		unlink(cfname);
-		info(0);
-		cur = cur + 1;
-	}
-	return 0;
-}
-
-int add_pd0() {
-	printf("Adding preload image...\n");
-	uint32_t coff = 0;
-	uint8_t cur = 0;
-	char cfname[64], mvcmd[128];
-	system("split -b 16777216 -d pd0.bin pd0.bin_");
-	system("gzip -9 -k pd0.bin_*");
-	while(1) {
-		memset(cfname, 0, 16);
-		memset(mvcmd, 0, 128);
-		sprintf(cfname, "pd0.bin_%02d", cur);
-		coff = getSz(cfname);
-		if (coff == 0)
-			break;
-		sprintf(mvcmd, "mv %s.gz rawfs.gz", cfname);
-		system(mvcmd);
-		if (write_entry(coff, 0, 2, 15, cur * 0x1000000) < 0)
-			break;
-		unlink("rawfs.gz");
-		unlink(cfname);
-		info(0);
-		cur = cur + 1;
-	}
-	return 0;
-}
-
-int add_sa0() {
-	printf("Adding sysdata image...\n");
-	uint32_t coff = 0;
-	uint8_t cur = 0;
-	char cfname[64], mvcmd[128];
-	system("split -b 16777216 -d sa0.bin sa0.bin_");
-	system("gzip -9 -k sa0.bin_*");
-	while(1) {
-		memset(cfname, 0, 16);
-		memset(mvcmd, 0, 128);
-		sprintf(cfname, "sa0.bin_%02d", cur);
-		coff = getSz(cfname);
-		if (coff == 0)
-			break;
-		sprintf(mvcmd, "mv %s.gz rawfs.gz", cfname);
-		system(mvcmd);
-		if (write_entry(coff, 0, 2, 13, cur * 0x1000000) < 0)
-			break;
-		unlink("rawfs.gz");
-		unlink(cfname);
-		info(0);
-		cur = cur + 1;
-	}
-	return 0;
-}
-
-int add_e2x() {
-	printf("Adding e2x image\n");
-	if (getSz("e2x.bin") != (0x6000 - 0x400)) {
-		printf("Unk size\n");
-		return 0;
-	}
-	system("gzip -9 -k e2x.bin");
-	system("mv e2x.bin.gz rawfs.gz");
-	if (write_entry((0x6000 - 0x400), 0, 1, 16, 0x400) < 0)
-		return 0;
-	unlink("rawfs.gz");
-	use_e2x = 1;
-	info(0);
-	return 0;
 }
 
 int fat2e2x() {
@@ -218,57 +34,193 @@ int fat2e2x() {
 		printf("Unk size\n");
 		return -1;
 	}
-	use_e2x = 1;
 	return 0;
+}
+
+void add_entry(FILE *fd, const char *src, uint8_t pid, pkg_toc *fwimg_toc, uint32_t dstoff) {
+	uint32_t fsize = getSz(src), gsize = 0;
+	if (fsize == 0)
+		return;
+	pkg_fs_etr fs_entry;
+	char cmdbuf[128];
+	memset(cmdbuf, 0, 128);
+	memset(&fs_entry, 0, sizeof(pkg_fs_etr));
+	sprintf(cmdbuf, "gzip -9 -k %s", src);
+	system(cmdbuf);
+	system("mv *.gz rawfs.gz");
+	gsize = getSz("rawfs.gz");
+	system("cat rawfs.gz >> fwimage.bin_part");
+	fs_entry.magic = 0xAA12;
+	fs_entry.part_id = pid;
+	fs_entry.pkg_off = fwimg_toc->fs_count;
+	fs_entry.pkg_sz = gsize;
+	fs_entry.dst_off = dstoff;
+	fs_entry.dst_sz = fsize;
+	fs_entry.crc32 = get_block_crc32_file("rawfs.gz");
+	if (pid == 2) {
+		fs_entry.type = 1;
+		fwimg_toc->bl_fs_no = fwimg_toc->fs_count;
+	} else if (pid == 0)
+		fs_entry.type = 2;
+	fwimg_toc->fs_count-=-1;
+	fwrite(&fs_entry, sizeof(pkg_fs_etr), 1, fd);
+	unlink("rawfs.gz");
+	return;
+}
+
+void add_entry_proxy(FILE *fd, const char *src, uint8_t pid, pkg_toc *fwimg_toc) {
+	printf("looking for %s\n", src);
+	uint32_t fsize = getSz(src);
+	if (fsize == 0) {
+		printf("does not exist\n");
+		return;
+	}
+	
+	if (fsize < 0x1000001) {
+		printf("adding (small)... ");
+		add_entry(fd, src, pid, fwimg_toc, 0);
+		printf("done\n");
+		return;
+	}
+	
+	uint32_t coff = 0, csz = 0;
+	uint8_t cur = 0;
+	char cfname[16], cmdbuf[128];
+	memset(cmdbuf, 0, 128);
+	sprintf(cmdbuf, "split -b 16777216 -d %s %s_", src, src);
+	system(cmdbuf);
+	while(1) {
+		memset(cfname, 0, 16);
+		sprintf(cfname, "%s_%02d", src, cur);
+		printf("looking for %s\n", cfname);
+		csz = getSz(cfname);
+		if (csz == 0)
+			break;
+		printf("adding (big)... ", cfname);
+		add_entry(fd, cfname, pid, fwimg_toc, coff);
+		printf("done\n");
+		unlink(cfname);
+		coff-=-csz;
+		cur-=-1;
+	}
+	
+	printf("done\n");
+	return;
+}
+
+void sync_fwimage(const char *imagepath, pkg_toc *fwimg_toc) {
+	char cmdbuf[128];
+	memset(cmdbuf, 0, 128);
+	sprintf(cmdbuf, "cat fwimage.bin_part >> %s", imagepath);
+	system(cmdbuf);
+	unlink("fwimage.bin_part");
+	
+	int fp = open(imagepath, O_RDWR);
+	if (fp < 0)
+		return;
+	pwrite(fp, fwimg_toc, sizeof(pkg_toc), 0);
+	
+	uint8_t ecount = 0;
+	pkg_fs_etr fs_entry;
+	uint32_t soff = sizeof(pkg_toc), boff = (sizeof(pkg_toc) + (fwimg_toc->fs_count * sizeof(pkg_fs_etr)));
+	while (ecount < fwimg_toc->fs_count) {
+		memset(&fs_entry, 0, sizeof(pkg_fs_etr));
+		pread(fp, &fs_entry, sizeof(pkg_fs_etr), soff);
+		fs_entry.pkg_off = boff;
+		pwrite(fp, &fs_entry, sizeof(pkg_fs_etr), soff);
+		printf("\nFS_PART[%d] - magic 0x%04X | type %d\n"
+			" READ: size 0x%X | offset 0x%X | ungzip %d\n"
+			" WRITE: size 0x%X | offset 0x%X @ id %d\n"
+			" PART_CRC32: 0x%08X\n",
+			ecount, fs_entry.magic, fs_entry.type,
+			fs_entry.pkg_sz, fs_entry.pkg_off, (fs_entry.pkg_sz < fs_entry.dst_sz),
+			fs_entry.dst_sz, fs_entry.dst_off, fs_entry.part_id,
+			fs_entry.crc32);
+		soff-=-sizeof(pkg_fs_etr);
+		boff-=-fs_entry.pkg_sz;
+		ecount-=-1;
+	}
+	
+	close(fp);
+	return;
+}
+
+void read_image(const char *image) {
+	int fp = open(image, O_RDWR);
+	if (fp < 0)
+		return;
+	pkg_toc fwimg_toc;
+	pread(fp, &fwimg_toc, sizeof(pkg_toc), 0);
+	printf("Image magic: 0x%X\nImage version: 0x%X\nTarget type: %s\nFS_PART count: %d\n\n", fwimg_toc.magic, fwimg_toc.version, target_dev[fwimg_toc.target], fwimg_toc.fs_count);
+	uint8_t ecount = 0;
+	pkg_fs_etr fs_entry;
+	uint32_t soff = sizeof(pkg_toc), boff = (sizeof(pkg_toc) + (fwimg_toc.fs_count * sizeof(pkg_fs_etr)));
+	while (ecount < fwimg_toc.fs_count) {
+		memset(&fs_entry, 0, sizeof(pkg_fs_etr));
+		pread(fp, &fs_entry, sizeof(pkg_fs_etr), soff);
+		printf("\nFS_PART[%d] - magic 0x%04X | type %d\n"
+			" READ: size 0x%X | offset 0x%X | ungzip %d\n"
+			" WRITE: size 0x%X | offset 0x%X @ id %d\n"
+			" PART_CRC32: 0x%08X\n",
+			ecount, fs_entry.magic, fs_entry.type,
+			fs_entry.pkg_sz, fs_entry.pkg_off, (fs_entry.pkg_sz < fs_entry.dst_sz),
+			fs_entry.dst_sz, fs_entry.dst_off, fs_entry.part_id,
+			fs_entry.crc32);
+		soff-=-sizeof(pkg_fs_etr);
+		ecount-=-1;
+	}
+	close(fp);
+	return;
 }
 
 int main (int argc, char *argv[]) {
 	
-	if(argc < 2){
-		printf ("\nusage: ./[binname] [devices]\n");
+	if(argc < 3){
+		printf ("\nusage: ./[binname] [file] [opt]\n");
 		return -1;
 	}
 	
+	uint8_t target_type = 6;
+	
 	// used devices
-	for (int i=1; i< argc; i++) {
+	for (int i=2; i< argc; i++) {
      	if (strcmp("-target", argv[i]) == 0) {
        		i = i + 1;
         	target_type = (uint8_t)atoi(argv[i]);
-    	} else if (strcmp("-flashable", argv[i]) == 0)
-        	emmc_target = 1;
-		else if (strcmp("-info", argv[i]) == 0) {
-			read_image();
+    	} else if (strcmp("-info", argv[i]) == 0) {
+			read_image(argv[1]);
 			return 0;
-		} else if (strcmp("-fw", argv[i]) == 0) {
-       		i = i + 1;
-        	fwminor = (uint16_t)strtol(argv[i] + 2, NULL, 16);
-    	} else if (strcmp("-e2x", argv[i]) == 0) {
-			if (fat2e2x() < 0)
-				return 0;
 		}
  	}
 	
-	unlink("fwimage.bin");
+	unlink(argv[1]);
 	
-	info(1);
-  
-	// used devices
-	for (int i=1; i< argc; i++) {
-     	if (strcmp("-kernel", argv[i]) == 0)
-       		add_os0();
-    	else if (strcmp("-bootloaders", argv[i]) == 0)
-        	add_slb2();
-		else if (strcmp("-system", argv[i]) == 0)
-        	add_vs0();
-		else if (strcmp("-sysdata", argv[i]) == 0)
-        	add_sa0();
-		else if (strcmp("-preload", argv[i]) == 0)
-        	add_pd0();
-		else if (strcmp("-e2x", argv[i]) == 0)
-        	add_e2x();
- 	}
+	printf("opening %s\n", argv[1]);
+	FILE *fd = fopen(argv[1], "wb");
+	if (fd == NULL) {
+		printf("error\n");
+		return 0;
+	}
 	
-	printf("\nfinished: fwimage.bin\n");
+	pkg_toc fwimg_toc;
+	memset(&fwimg_toc, 0, sizeof(pkg_toc));
+	fwimg_toc.magic = 0xCAFEBABE;
+	fwimg_toc.version = 2;
+	fwimg_toc.target = target_type;
+	fwrite(&fwimg_toc, sizeof(pkg_toc), 1, fd);
 	
- 	return 0;
+	add_entry_proxy(fd, "sa0.bin", 0xC, &fwimg_toc);
+	add_entry_proxy(fd, "pd0.bin", 0xE, &fwimg_toc);
+	add_entry_proxy(fd, "os0.bin", 0x3, &fwimg_toc);
+	add_entry(fd, "slb2.bin", 0x2, &fwimg_toc, 0);
+	add_entry_proxy(fd, "vs0.bin", 0x4, &fwimg_toc);
+	if (fat2e2x() == 0)
+		add_entry(fd, "e2x.bin", 0, &fwimg_toc, 0x400);
+	
+	fclose(fd);
+	
+	sync_fwimage(argv[1], &fwimg_toc);
+	
+	printf("\nfinished: %s\n", argv[1]);
+	return 0;
 }

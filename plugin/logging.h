@@ -1,9 +1,10 @@
-static int enable_logging = LOGGING_ENABLED;
+static int enable_f_logging = 0;
 static char buf_logging[256];
 
 #define LOG(...) \
 	do { \
-		if (enable_logging == 1) { \
+		ksceDebugPrintf(__VA_ARGS__); \
+		if (enable_f_logging) { \
 			memset(buf_logging, 0, sizeof(buf_logging)); \
 			snprintf(buf_logging, sizeof(buf_logging), ##__VA_ARGS__); \
 			logg(buf_logging, strlen(buf_logging), LOG_LOC, 2); \
@@ -12,7 +13,9 @@ static char buf_logging[256];
 	
 #define LOG_START(...) \
 	do { \
-		if (enable_logging == 1) { \
+		ksceDebugPrintf("starting new log\n"); \
+		ksceDebugPrintf(__VA_ARGS__); \
+		if (enable_f_logging) { \
 			memset(buf_logging, 0, sizeof(buf_logging)); \
 			snprintf(buf_logging, sizeof(buf_logging), ##__VA_ARGS__); \
 			logg(buf_logging, strlen(buf_logging), LOG_LOC, 1); \

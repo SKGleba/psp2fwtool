@@ -1,343 +1,701 @@
-#include "tai_compat.h"
+#include "tai_compat.c"
 #include "fwtool.h"
 #include "logging.h"
 #include "crc32.c"
 
-static int opret = -1, pinp = 0, debugging_mode = 0, cur_dev = 6, e2xflashed = 0;
-static int (* init_sc)() = NULL, (* prep_sm)() = NULL, (* personalize_slsk)() = NULL;
-void *fsp_buf = NULL, *gz_buf = NULL;
-static uint32_t s2loff = 0, s2lsz = 0;
+static uint32_t fw = 0;
+static SceIoDevice custom;
+char *fwimage = NULL, *fwrpoint = NULL;
+void *fsp_buf = NULL, *gz_buf = NULL, *bl_buf = NULL;
+static char src_k[64], mbr[0x200], cpart_k[64];
+static int emmc = 0, cur_dev = 0, use_new_bl = 0, redir_writes = 0, upmgr_ln = 0, is_prenso = 0;
 
-volatile il_mode ilm;
-volatile pkg_fs_etr fs_args;
-
-static char src_k[64], dst_k[64];
-
-// BYPASS1: Skip firmware ver checks on bootloaders 0xdeadbeef
-// TODO: proper RE, its EZ
+/* 
+	BYPASS1: Skip firmware ver checks on bootloaders 0xdeadbeef
+	This sets system firmware version to 0xDEADBEEF which makes stage 2 loader use its hardcoded ver
+	All offsets are specific to 3.60-3.73
+	TODO: proper REimplementation, its EZ.
+*/
 static int skip_bootloader_chk(void) {
-	uint32_t arg0, arg1;
-	int ret = -1;
-	tai_module_info_t info;			
-	info.size = sizeof(info);		
-	LOG("getting mod info for SceSblUpdateMgr... ");
-	if (taiGetModuleInfoForKernel(KERNEL_PID, "SceSblUpdateMgr", &info) >= 0) {
-		LOG("gud\n");
-		LOG("patching sc_init for unused\n");
-		
-		// offs for 3.60-3.73
-		char cmp_err[2] = {0x69, 0x28}, cmp_ret[4] = {0x46, 0xf2, 0x05, 0x23}; 	// --------------
-		INJECT("SceSblUpdateMgr", 0x87a4, cmp_err, sizeof(cmp_err));			// make it error before overwriting PMx2 flags
-		INJECT("SceSblUpdateMgr", 0x898c, cmp_ret, sizeof(cmp_ret));			// --------------
-		module_get_offset(KERNEL_PID, info.modid, 0, 0x8639, &prep_sm);
-		module_get_offset(KERNEL_PID, info.modid, 0, 0x8705, &init_sc);
-		
-		LOG("calling sm prep... ");
-		ret = prep_sm(&arg0, &arg1, 1, 0xffffffff); // load SM, get PMx2
-		LOG("ret 0x%X, 0x%lX, 0x%lX\n", ret, arg0, arg1);
-		
-		// kamikaze, if the incorrect offs were hooked - brick :P
-		arg0 = 0xFFFFFFFF;
-		arg1 = 0xFFFFFFFF;
-		
-		LOG("calling sc init 0x%lX, 0x%lX... ", arg0, arg1);
-		ret = init_sc(&arg0, &arg1); // initialize sc, aka unk flags & PMx2 default & ver=0xdeadbeef (skips ver checks on bl2)
-		LOG("ret 0x%X\n", ret);
-		if (ret == 0x800F6205) // correct CUSTOM ret, no brick
-			return 0;
-		// else well... bye
-	} else {
-		LOG("NG\n");
-	}
-	return 1;
-}
+	uint32_t arg0 = 0, arg1 = 0;
+	int (* init_sc)() = NULL, (* prep_sm)() = NULL;
+	LOG("skip_bootloader_chk\n");
+	if (upmgr_ln < 0)
+		return upmgr_ln;
 
-// BYPASS2: Skip firmware ver checks on bootloaders PM
-// TODO: proper RE
-static int (* pload_sm)() = NULL;
-static int (* pset_pm)() = NULL;
-static int (* pget_pm)() = NULL;
-static int (* pstop_sm)() = NULL;
-static int skip_pm_chk(void) {
-	uint32_t arg0, arg1;
-	int ret = -1;
-	tai_module_info_t info;			
-	info.size = sizeof(info);		
-	LOG("getting mod info for SceSblPostSsMgr... ");
-	if (taiGetModuleInfoForKernel(KERNEL_PID, "SceSblPostSsMgr", &info) >= 0) {
-		LOG("gud\n");
-		module_get_offset(KERNEL_PID, info.modid, 0, 0x8825, &pload_sm); 
-		module_get_offset(KERNEL_PID, info.modid, 0, 0x89a1, &pget_pm); 
-		module_get_offset(KERNEL_PID, info.modid, 0, 0x8a41, &pset_pm); 
-		module_get_offset(KERNEL_PID, info.modid, 0, 0x8891, &pstop_sm); 
-		LOG("calling sm prep... ");
-		ret = pload_sm("os0:sm/pm_sm.self"); // load sm with int buffers and shit
-		ret = pget_pm(&arg0, &arg1); // get PMx2
-		LOG("get 0x%lX, 0x%lX\n", arg0, arg1);
-		arg0 = 0xFFFFFFFF; // some boot flags-bit 1 LB skips fw checks on bl2
-		arg1 = 0xFFFFFFFF; // PM type(s)
-		LOG("calling pset_pm 0x%lX, 0x%lX, 0x%X... ", arg0, arg1, 7);
-		ret = pset_pm(&arg0, &arg1, 7); // set PMx2 release; NOTE: setting manu requires JIG; VULN: (on =<3.73) input is not checked - can set anyways
-		LOG("ret 0x%X\n", ret);
-		ret = pget_pm(&arg0, &arg1); // get PMx2 again
-		LOG("get 0x%lX, 0x%lX\n", arg0, arg1);
-		pstop_sm(); // stop & unload the pm sm
+	LOG("patching PMx2 erret...\n");
+	// make sc_init error before overwriting PMx2 flags
+	char cmp_err[2] = {0x69, 0x28}, cmp_ret[4] = {0x46, 0xf2, 0x05, 0x23};
+	INJECT_NOGET(upmgr_ln, 0x87a4, cmp_err, sizeof(cmp_err));
+	INJECT_NOGET(upmgr_ln, 0x898c, cmp_ret, sizeof(cmp_ret));
+
+	// if previous patch fails make sure it will not write the flags
+	char nop_32[4] = {0xaf, 0xf3, 0x00, 0x80};
+	INJECT_NOGET(upmgr_ln, 0x88da, nop_32, 4);
+	INJECT_NOGET(upmgr_ln, 0x88f4, nop_32, 4);
+	INJECT_NOGET(upmgr_ln, 0x890c, nop_32, 4);
+	INJECT_NOGET(upmgr_ln, 0x8928, nop_32, 4);
+	INJECT_NOGET(upmgr_ln, 0x8944, nop_32, 4);
+
+	// get req funcs
+	module_get_offset(KERNEL_PID, upmgr_ln, 0, 0x8639, &prep_sm);
+	module_get_offset(KERNEL_PID, upmgr_ln, 0, 0x8705, &init_sc);
+	if (prep_sm == NULL || init_sc == NULL)
+		return -1;
+
+	LOG("starting update sm...\n");
+	// load SM, get PMx2
+	if (prep_sm(&arg0, &arg1, 1, 0xffffffff) < 0)
+		return -1;
+
+	// pointless but always fun
+	arg0 = 0xFFFFFFFF;
+	arg1 = 0xFFFFFFFF;
+
+	LOG("calling sc_init, good luck!\n");
+	// initialize sc, aka unk flags & PMx2 default & ver=0xdeadbeef (skips ver checks on bl2)
+	int ret = init_sc(&arg0, &arg1);
+	LOG("sc_init ret 0x%X exp 0x800F6205\n", ret);
+	if (ret == 0x800F6205) // correct CUSTOM ret
 		return 0;
-	} else {
-		LOG("NG\n");
-	}
-	return 1;
+
+	return ret;
 }
 
 // Personalize slb2 data @ bufaddr
-// TODO: proper RE
 static int personalize_buf(void *bufaddr) {
-	int ret = -1, sm_ret = -1;
-	tai_module_info_t info;			
-	info.size = sizeof(info);		
-	LOG("magic: 0x%lX\n", *(uint32_t *)bufaddr); // first 4B of srcbuf
-	LOG("magic2: 0x%lX\n", *(uint32_t *)fsp_buf); // first 4B of mainbuf
-	LOG("getting mod info for SceSblUpdateMgr... ");
-	if (taiGetModuleInfoForKernel(KERNEL_PID, "SceSblUpdateMgr", &info) >= 0) {
-		LOG("gud\n");
-		module_get_offset(KERNEL_PID, info.modid, 0, 0x58c5, &personalize_slsk); // same for 3.60-3.73
-		LOG("personalize_sk... ");
-		ret = personalize_slsk("second_loader.enc", "second_loader.enp", "second_loader.enp", "second_loader.enp_", bufaddr); // pc (.enc->.enp); nonpc .enp->.enp_
-		if (ret == 0) 
-			ret = personalize_slsk("secure_kernel.enc", "secure_kernel.enp", "secure_kernel.enp", "secure_kernel.enp_", bufaddr); // pc (.enc->.enp); nonpc .enp->.enp_
-		if (ret == 0) {
-			LOG("gud\n");
-			return 0;
-		} else {
-			LOG("NG; ret=0x%X\n", ret);
-		}
-	} else {
-		LOG("NG\n");
+	int ret = -1, (* personalize_slsk)() = NULL;
+	LOG("personalize_buf\n");
+	if (upmgr_ln < 0)
+		return ret;
+	
+	// get req func, same for 3.60-3.73
+	module_get_offset(KERNEL_PID, upmgr_ln, 0, 0x58c5, &personalize_slsk);
+	if (personalize_slsk == NULL)
+		return -1;
+	
+	LOG("personalizing stage 2 bootloader...\n");
+	// pc (.enc->.enp); nonpc .enp->.enp_
+	ret = personalize_slsk("second_loader.enc", "second_loader.enp", "second_loader.enp", "second_loader.enp_", bufaddr);
+	if (ret == 0) {
+		LOG("personalizing cMeP secure kernel...\n");
+		// pc (.enc->.enp); nonpc .enp->.enp_
+		ret = personalize_slsk("secure_kernel.enc", "secure_kernel.enp", "secure_kernel.enp", "secure_kernel.enp_", bufaddr);
+		return ret;
 	}
-	return 22;
+	LOG("failed 0x%X\n", ret);
+	return ret;
 }
 
 // cmp crc of first 0x200 bytes of srcbuf with expected crc
-static uint32_t check_block_crc32(void *buf, uint32_t exp_crc) {
+uint32_t check_block_crc32(void *buf, uint32_t exp_crc) {
 	char crcbuf[0x200];
 	memcpy(&crcbuf, buf, 0x200);
 	uint32_t crc = crc32(0, &crcbuf, 0x200);
+	LOG("ccrc 0x%X vs 0x%X\n", crc, exp_crc);
 	if (exp_crc > 0 && exp_crc != crc)
 		return -1;
 	return 0;
 }
 
-// Work a fs
-static void work_fs() {
-	
-	int usegz = (fs_args.magic == 0x69) ? 1 : ((fs_args.magic == 0x34 && fs_args.dst_sz == fs_args.pkg_sz) ? 0 : 3); // 0 - raw, 1 - compressed
-	if (usegz == 3) {
-		opret = 1;
-		LOG("bad entry!\n");
-		return;
-	}
-	
-	int is_blstor = (pinp == 1) ? 1 : 0; //  cmdhandler command, 1 - bootloaders
-	
-	if (ilm.fmode == 1) // emmc update mode
-		snprintf(dst_k, sizeof(dst_k), "sdstor0:%s-lp-%s-%s", stor_st[fs_args.dst_etr[0]], stor_rd[fs_args.dst_etr[1]], stor_th[fs_args.dst_etr[2]]);
-	
-	LOG("work_fs: %s[0x%lx] -> %s[0x%lx], 0x%lX[c0x%lX], wm: 0x%X, fm: 0x%X, pb: %d\n", ilm.inp, fs_args.pkg_off, ilm.oup, fs_args.dst_off, fs_args.dst_sz, fs_args.pkg_sz, ilm.wmode, ilm.fmode, is_blstor);
-	memset(gz_buf, 0, 0x1000000);
-	
-	// read sz from src off to buf
-	LOG("R->");
-	int fd, wfd;
-	SceIoStat stat;
-	int stat_ret = ksceIoGetstat(ilm.inp, &stat);
-	opret = 2;
-	if(stat_ret < 0)
-		return;
-	else
-		fd = ksceIoOpen(ilm.inp, SCE_O_RDONLY, 0);
-	ksceIoPread(fd, gz_buf, fs_args.pkg_sz, fs_args.pkg_off);
-	ksceIoClose(fd);
-	
-	// integrity check, useless on raw input
-	LOG("C->");
-	if (check_block_crc32(gz_buf, fs_args.crc32) < 0 && !debugging_mode) {
-		opret = 6;
-		return;
-	}
-	
-	// ungzip or memcpy to main buf
-	LOG("D->");
-	if (usegz) {
-		if (ksceGzipDecompress(fsp_buf, fs_args.dst_sz, gz_buf, NULL) < 0) {
-			opret = 3;
-			return;
-		}
-	} else
-		memcpy(fsp_buf, gz_buf, fs_args.pkg_sz);
-	
-	// personalize bootloaders
-	if (is_blstor) {
-		LOG("(personalize)\n");
-		opret = 5;
-		if (personalize_buf(fsp_buf) != 0)
-			return;
-		if (ilm.target < 6) {
-			// TODO: proper parser
-			s2loff = *(uint32_t *)(fsp_buf + 0x50); // bootloader2 offset IN slb2
-			s2lsz = (uint32_t)(*(uint32_t *)(fsp_buf + 0x54) / 0x200); // bootloader2 size in blocks
-		}
-		opret = 7;
-		if (ilm.fw_minor > 0 && *(uint16_t *)(fsp_buf + 0x245) != (uint16_t)ilm.fw_minor && !debugging_mode) // pointless, but make sure that the expected fw match the bls fw
-			return;
-	}
-		
-	// write sz from mainbuf to dst off
-	LOG("W... ");
-	if (ilm.wmode == 1) // target: emmc
-		wfd = ksceIoOpen(ilm.oup, SCE_O_RDWR, 0777);
-	else // target: file
-		wfd = ksceIoOpen(ilm.oup, SCE_O_WRONLY | SCE_O_TRUNC | SCE_O_CREAT, 6);
-	opret = 4;
-	if (wfd < 0)
-		return;
-	ksceIoPwrite(wfd, fsp_buf, fs_args.dst_sz, fs_args.dst_off);
-	ksceIoClose(wfd);
-	
-	if (pinp == 4)
-		e2xflashed = 1; //  for MBR update
-	
-	LOG("OK!\n");
-	
-	opret = 0;
-}
-
-int find_active_os0(master_block_t *master) {
-	int active_os0 = 69;
+// find partition [part_id] with active flag set to [active] in sce mbr [master]
+int find_part(master_block_t *master, uint8_t part_id, uint8_t active) {
+	LOG("find_part %d %d\n", part_id, active);
 	for (size_t i = 0; i < ARRAYSIZE(master->partitions); ++i) {
-		partition_t *p = &master->partitions[i];
-		if (p->active == 1 && p->code == 3)
-			active_os0 = i;
+		if (master->partitions[i].code == part_id && master->partitions[i].active == active)
+			return i;
 	}
-	return active_os0;
+	LOG("not found\n");
+	return -1;
 }
 
-// Rewrite mbr
-static void rewrite_mbr() {
-	int wfd;
-	LOG("REWRITING MBR... ");
-	opret = 1;
-	wfd = ksceIoOpen("sdstor0:int-lp-act-entire", SCE_O_RDWR, 0777);
-	if (wfd < 0)
-		return;
-	ksceIoRead(wfd, fsp_buf, 0x200);
-	ksceIoClose(wfd);
-	uint32_t cblpoff = (*(uint32_t *)(fsp_buf + 0x30) < 0x6000) ? 0x4000 : 0x6000; // get active bank
-	if (s2loff > 0)
-		*(uint32_t *)(fsp_buf + 0x30) = (uint32_t)(cblpoff + s2loff); // bootloader2 offset
-	if (s2lsz > 0)
-		*(uint32_t *)(fsp_buf + 0x34) = (uint32_t)s2lsz; // bootloader2 size
-	opret = 2;
-	wfd = ksceIoOpen("sdstor0:int-lp-act-entire", SCE_O_RDWR, 0777);
-	if (wfd < 0)
-		return;
-	if (e2xflashed) { // redirect active os0 to e2x
-		master_block_t master;
-		memcpy(&master, fsp_buf, 0x200);
-		int active_os0 = find_active_os0(&master);
-		if (active_os0 < 69) { // idk
-			master.partitions[active_os0].off = 2;
-			ksceIoWrite(wfd, &master, 0x200);
-		}
-	}
-	ksceIoWrite(wfd, fsp_buf, 0x200);
-	ksceIoClose(wfd);
-	LOG("OK!\n");
-	opret = 0;
-}
-
+// fix for sdstor0 RW while system is running
 static int siofix(void *func) {
-	int ret = 0;
-	int res = 0;
-	int uid = 0;
+	int ret = 0, res = 0, uid = 0;
 	ret = uid = ksceKernelCreateThread("siofix", func, 64, 0x10000, 0, 0, 0);
-	if (ret < 0){ret = -1; goto cleanup;}
-	if ((ret = ksceKernelStartThread(uid, 0, NULL)) < 0) {ret = -1; goto cleanup;}
-	if ((ret = ksceKernelWaitThreadEnd(uid, &res, NULL)) < 0) {ret = -1; goto cleanup;}
+	if ((ret < 0) || ((ret = ksceKernelStartThread(uid, 0, NULL)) < 0) || ((ret = ksceKernelWaitThreadEnd(uid, &res, NULL)) < 0)) {
+		ret = -1;
+		goto cleanup;
+	}
 	ret = res;
 cleanup:
-	if (uid > 0) ksceKernelDeleteThread(uid);
+	if (uid > 0)
+		ksceKernelDeleteThread(uid);
 	return ret;
 }
 
-int fwtool_cmd_handler(int cmd, void *cmdbuf) {
-	int state = 0;
+// get enso install status (err/0/1)
+int get_enso_state(void) {
+	int (* read_mmc)() = NULL;
+	int mmctx = ksceSdifGetSdContextPartValidateMmc(0);
+	char mbr_char[0x200], sbr_char[0x200], rmbr_char[0x200];
+	ksceSdifReadSectorMmc(mmctx, 1, &sbr_char, 1);
+	if (memcmp(&sbr_char, "Sony Computer Entertainment Inc.", 0x20) == 0) {
+		ksceSdifReadSectorMmc(mmctx, 0, &mbr_char, 1);
+		if (memcmp(&mbr_char, &sbr_char, 0x200) == 0) {
+			if (module_get_offset(KERNEL_PID, ksceKernelSearchModuleByName("SceSdif"), 0, 0x3e7d, &read_mmc) < 0
+			|| read_mmc == NULL)
+				return -1;
+			read_mmc(mmctx, 0, &rmbr_char, 1);
+			if (memcmp(&mbr_char, &rmbr_char, 0x200) != 0)
+				return 1;
+		}
+	}
+	return 0;
+}
+
+// mount [blkn] as grw0:
+int cmount_part(const char *blkn) {
+	SceIoMountPoint *(* sceIoFindMountPoint)(int id) = NULL;
+	if (module_get_offset(KERNEL_PID, ksceKernelSearchModuleByName("SceIofilemgr"), 0, (fw > 0x03630000) ? 0x182f5 : 0x138c1, (uintptr_t *)&sceIoFindMountPoint) < 0
+	|| sceIoFindMountPoint == NULL)
+		return -1;
+	SceIoMountPoint *mountp;
+	mountp = sceIoFindMountPoint(0xA00);
+	if (mountp == NULL)
+		return -1;
+	custom.dev = mountp->dev->dev;
+	custom.dev2 = mountp->dev->dev2;
+	custom.blkdev = custom.blkdev2 = blkn;
+	custom.id = 0xA00;
+	DACR_OFF(mountp->dev = &custom;);
+	ksceIoUmount(0xA00, 0, 0, 0);
+	ksceIoUmount(0xA00, 1, 0, 0);
+	return ksceIoMount(0xA00, NULL, 0, 0, 0, 0);
+}
+
+// update inactive slb2 bank sha256 in SNVS
+int update_snvs_sha256(void) {
+	int ret = -1;
+	char bl_hash[0x20];
+	int (* snvs_update_bl_sha)(int totrans_p, int totrans_sz, void *buf, int bufsz, int op, int ctx) = NULL;
+	LOG("getting bootloaders sha256...\n");
+	if (ksceSha256Digest(bl_buf, (*(int *)(bl_buf + 0x20 + (*(int *)(bl_buf + 0xc) * 0x30 + -0x30) + 4) + 0x1ffU & 0xfffffe00) + *(int *)(bl_buf + 0x20 + (*(int *)(bl_buf + 0xc) * 0x30 + -0x30)) * 0x200, bl_hash) < 0)
+		return ret;
+	LOG("%s bl sha256 to SNVS...\n", (redir_writes) ? "SKIP write of" : "WRITING");
+	if (redir_writes)
+		return 0;
+	module_get_offset(KERNEL_PID, upmgr_ln, 0, 0x854d, &snvs_update_bl_sha);
+	if (snvs_update_bl_sha == NULL)
+		return ret;
+	ret = snvs_update_bl_sha(9, 0x20, bl_hash, 0x20, 1, -1);
+	LOG("snvs_update_bl_sha ret 0x%X\n", ret);
+	return ret;
+}
+
+// default storage write func
+int default_write(uint32_t off, void *buf, uint32_t sz) {
+	LOG("BLKWRITE 0x%X @ 0x%X to %s\n", sz, off, (redir_writes) ? "GC-SD" : "EMMC");
+	if (off == 0 && sz > 1)
+		return -1;
+	if (redir_writes) {
+		if (ksceSdifWriteSectorSd(ksceSdifGetSdContextPartValidateSd(1), off, buf, sz) < 0)
+			LOG("BLKWRITE to GC-SD failed but return 0 anyways\n");
+		return 0;
+	}
+	return ksceSdifWriteSectorMmc(emmc, off, buf, sz);
+}
+
+// write [partition] to fwrpoint @ [offset] from emmc, copy buf sha256 to output if !null
+int fwtool_read_to_fwrpoint(uint32_t offset, void *sha256_u, uint8_t partition) {
+	if (offset == 0 || partition == 0)
+		return -1;
+	int state = 0, opret = -1;
 	ENTER_SYSCALL(state);
-	opret = -1;
 	
-	if (ilm.version == 0 && cmd != 0 && cmd != 69) {
-		opret = 1;
-		return 1;
+	int calc_dig = !(sha256_u == NULL);
+	LOG("fwtool_read_to_fwrpoint %d 0x%X | calc %d\n", partition, offset, calc_dig);
+	char sha256_c[0x20];
+	memset(sha256_c, 0, 0x20);
+	memset(fsp_buf, 0, 0x1000000);
+	
+	LOG("getting partition off...\n");
+	uint32_t main_off = 0, size = 0;
+	int pno = 0;
+	master_block_t *master = (master_block_t *)mbr;
+	if (partition == 0x69) {
+		LOG("e2x mode\n");
+		pno = find_part(master, 1, 0);
+		if (pno < 0 || (0x2E > (master->partitions[pno].off - 2)))
+			goto derr;
+		main_off = 2;
+		size = 0x2E;
+	} else {
+		master_block_t *master = (master_block_t *)mbr;
+		pno = find_part(master, partition, 0);
+		if (pno < 0)
+			goto derr;
+		main_off = master->partitions[pno].off;
+		size = master->partitions[pno].sz;
+	}
+	if (main_off == 0)
+		goto derr;
+	
+	LOG("opening fwrpoint...\n");
+	SceIoStat stat;
+	int ret = ksceIoGetstat(fwrpoint, &stat);
+	if (ret < 0 || offset > stat.st_size)
+		goto derr;
+	int fd = ksceIoOpen(fwrpoint, SCE_O_WRONLY, 6);
+	
+	LOG("starting write (big) 0x%X...\n", size);
+	uint32_t copied = 0;
+	while((copied + 0x8000) <= size) { // first copy with full buffer
+		ret = ksceSdifReadSectorMmc(emmc, main_off + copied, fsp_buf, 0x8000);
+		if (ret < 0)
+			goto fwlend;
+		if (calc_dig) {
+			LOG("sha256-checking the buf...\n");
+			if (ksceSha256Digest(fsp_buf, 0x1000000, sha256_c) < 0)
+				goto fwlend;
+			if (ksceKernelMemcpyKernelToUser(sha256_u, sha256_c, 0x20) < 0)
+				goto fwlend;
+		}
+		ret = ksceIoPwrite(fd, fsp_buf, 0x1000000, offset + (copied * 0x200));
+		if (ret < 0)
+			goto fwlend;
+		copied = copied + 0x8000;
 	}
 	
-	switch (cmd) {
-		case 0: // set pkg info
-			ksceKernelMemcpyUserToKernel((void *)&ilm, (uintptr_t)cmdbuf, sizeof(il_mode));
-			ksceKernelMemcpyUserToKernel(src_k, (uintptr_t)ilm.inp, 64);
-			ksceKernelMemcpyUserToKernel(dst_k, (uintptr_t)ilm.oup, 64);
-			ilm.inp = src_k;
-			ilm.oup = dst_k;
-			if (debugging_mode || ilm.target > 4) // skip target checks if dbg or pkg for all
-				ilm.target = cur_dev;
-			opret = (ilm.version == 1) ? ((ilm.target == cur_dev) ? 0 : 3) : 2;
-			LOG("set_infobuf: 0x%X\n", opret);
-			break;
-		case 1:	// bootloaders
-		case 2: // normal fs
-		case 4: // e2x
-			ksceKernelMemcpyUserToKernel((void *)&fs_args, (uintptr_t)cmdbuf, sizeof(pkg_fs_etr));
-			pinp = cmd;
-			siofix(work_fs);
-			LOG("proxy_work_fs: 0x%X\n", opret);
-			break;
-		case 3: // rewrite mbr/mod mbr for e2x
-			siofix(rewrite_mbr);
-			LOG("proxy_rewrite_mbr: 0x%X\n", opret);
-			break;
-		case 34: // change fw to 0xdeadbeef, this will skip version checks on bootloaders
-			opret = skip_bootloader_chk(); // dirty, patching sc_init
-			LOG("skip_bl_chk: 0x%X\n", opret);
-			break;
-		case 69: // skip most integrity checks
-			debugging_mode = 1;
-			LOG("debugging mode set! skipping all checks.\n");
-			opret = 0;
-			break;
-		default:
-			break;
+	if (copied < size && (size - copied) <= 0x8000) { // then copy the remaining data
+		LOG("starting write (small) 0x%X...\n", (size - copied));
+		ret = ksceSdifReadSectorMmc(emmc, main_off + copied, fsp_buf, (size - copied));
+		if (ret < 0)
+			goto fwlend;
+		if (calc_dig) {
+			LOG("sha256-checking the buf...\n");
+			if (ksceSha256Digest(fsp_buf, 0x1000000, sha256_c) < 0)
+				goto fwlend;
+			if (ksceKernelMemcpyKernelToUser(sha256_u, sha256_c, 0x20) < 0)
+				goto fwlend;
+		}
+		ret = ksceIoPread(fd, fsp_buf, (size - copied) * 0x200, offset + (copied * 0x200));
+		if (ret < 0)
+			goto fwlend;
+		copied = size;
 	}
+	
+	LOG("write done 0x%X=0x%X?\n", copied, size);
+	if (copied != size)
+		opret = -1;
+	else
+		opret = 0;
+	
+fwlend:
+	ksceIoClose(fd);
+derr:
+	LOG("exit call || 0x%X\n", opret);
 	EXIT_SYSCALL(state);
 	return opret;
 }
 
-int module_start(SceSize argc, const void *args)
-{
-	LOG_START("\nfwtool vx started!\n");
+// write [size] bytes from fwrpoint @ [offset] to [partition] if sha256 matches one in [sha256_u]
+int fwtool_write_from_fwrpoint(uint32_t offset, uint32_t size, void *sha256_u, uint8_t partition) {
+	if (offset == 0 || size == 0 || (size % 0x200) != 0 || partition == 0)
+		return -1;
+	size = size / 0x200;
+	int state = 0, opret = -1;
+	ENTER_SYSCALL(state);
 	
-    ksceKernelGetMemBlockBase(ksceKernelAllocMemBlock("fsw_p", 0x10C0D006, 0x1000000, NULL), (void**)&fsp_buf);
-	ksceKernelGetMemBlockBase(ksceKernelAllocMemBlock("gz_p", 0x10C0D006, 0x1000000, NULL), (void**)&gz_buf);
+	int calc_dig = !(sha256_u == NULL);
+	LOG("fwtool_write_from_fwrpoint %d 0x%X 0x%X | calc %d\n", partition, offset, size, calc_dig);
+	char sha256_k[0x20], sha256_c[0x20];
+	memset(sha256_c, 0, 0x20);
 	
-	LOG("fw: 0x%lX\n", *(uint32_t *)(*(int *)(ksceKernelGetSysbase() + 0x6c) + 4));
-	cur_dev = ksceSblAimgrIsTest() ? 0 : (ksceSblAimgrIsTool() ? 1 : (ksceSblAimgrIsDEX() ? 2 : (ksceSblAimgrIsCEX() ? 3 : 4)));
-	LOG("device: %s\n", target_dev[cur_dev]);
+	if (calc_dig && (ksceKernelMemcpyUserToKernel(sha256_k, sha256_u, 0x20) < 0))
+		goto perr;
 	
-	memset((void *)&ilm, 0, sizeof(il_mode));
+	memset(fsp_buf, 0, 0x1000000);
 	
-	LOG("\n---------WAITING_4_U_CMDN---------\n\n");
+	LOG("getting partition off...\n");
+	uint32_t main_off = 0;
+	int pno = 0;
+	master_block_t *master = (master_block_t *)mbr;
+	if (partition == 0x69) {
+		LOG("e2x mode\n");
+		pno = find_part(master, 1, 0);
+		if (pno < 0 || (size > (master->partitions[pno].off - 2)))
+			goto perr;
+		main_off = 2;
+	} else {
+		master_block_t *master = (master_block_t *)mbr;
+		pno = find_part(master, partition, 0);
+		if (pno < 0)
+			goto perr;
+		main_off = master->partitions[pno].off;
+		if (size > master->partitions[pno].sz)
+			goto perr;
+	}
+	if (main_off == 0)
+		goto perr;
 	
-	return SCE_KERNEL_START_SUCCESS;
+	LOG("opening fwrpoint...\n");
+	SceIoStat stat;
+	int ret = ksceIoGetstat(fwrpoint, &stat);
+	if (ret < 0 || stat.st_size < (offset + (size * 0x200)))
+		goto perr;
+	int fd = ksceIoOpen(fwrpoint, SCE_O_RDONLY, 0);
+	
+	LOG("starting write (big) 0x%X...\n", size);
+	uint32_t copied = 0;
+	while((copied + 0x8000) <= size) { // first copy with full buffer
+		opret = ksceIoPread(fd, fsp_buf, 0x1000000, offset + (copied * 0x200));
+		if (opret < 0)
+			goto frlend;
+		if (calc_dig) {
+			opret = -1;
+			LOG("sha256-checking the buf...\n");
+			if (ksceSha256Digest(fsp_buf, 0x1000000, sha256_c) < 0)
+				goto frlend;
+			if (memcmp(sha256_c, sha256_k, 0x20) != 0)
+				goto frlend;
+		}
+		opret = default_write(main_off + copied, fsp_buf, 0x8000);
+		if (opret < 0)
+			goto frlend;
+		copied = copied + 0x8000;
+	}
+	
+	if (copied < size && (size - copied) <= 0x8000) { // then copy the remaining data
+		LOG("starting write (small) 0x%X...\n", (size - copied));
+		opret = ksceIoPread(fd, fsp_buf, (size - copied) * 0x200, offset + (copied * 0x200));
+		if (opret < 0)
+			goto frlend;
+		if (calc_dig) {
+			opret = -1;
+			LOG("sha256-checking the buf...\n");
+			if (ksceSha256Digest(fsp_buf, 0x1000000, sha256_c) < 0)
+				goto frlend;
+			if (memcmp(sha256_c, sha256_k, 0x20) != 0)
+				goto frlend;
+		}
+		opret = default_write(main_off + copied, fsp_buf, (size - copied));
+		if (opret < 0)
+			goto frlend;
+		copied = size;
+	}
+	
+	LOG("write done 0x%X=0x%X?\n", copied, size);
+	if (copied != size)
+		opret = -1;
+	else
+		opret = 0;
+frlend:
+	ksceIoClose(fd);
+perr:
+	LOG("exit call || 0x%X\n", opret);
+	EXIT_SYSCALL(state);
+	return opret;
+}
+
+// read [size] bytes from fwimage @ [offset] to fsp buf, check 0x200 to match [crc32], g[unzip] the output
+int fwtool_read_fwimage(uint32_t offset, uint32_t size, uint32_t crc32, uint32_t unzip) {
+	if (size > 0x1000000 || size == 0 || offset == 0 || unzip > 0x1000000)
+		return -1;
+	int state = 0, opret = -1;
+	ENTER_SYSCALL(state);
+	LOG("fwtool_read_fwimage 0x%X 0x%X 0x%X 0x%X\n", offset, size, crc32, unzip);
+	
+	memset(fsp_buf, 0, 0x1000000);
+	if (unzip > 0)
+		memset(gz_buf, 0, 0x1000000);
+	
+	LOG("reading fwimage...\n");
+	SceIoStat stat;
+	int ret = ksceIoGetstat(fwimage, &stat);
+	if (ret < 0 || stat.st_size < (offset + size))
+		goto rerr;
+	
+	int fd = ksceIoOpen(fwimage, SCE_O_RDONLY, 0);
+	ret = ksceIoPread(fd, (unzip > 0) ? gz_buf : fsp_buf, size, offset);
+	ksceIoClose(fd);
+	if (ret < 0)
+		goto rerr;
+	
+	LOG("crchecking...\n");
+	if (check_block_crc32((unzip > 0) ? gz_buf : fsp_buf, crc32) < 0)
+		goto rerr;
+	
+	LOG("ungzipping...\n");
+	if (unzip > 0)
+		opret = ksceGzipDecompress(fsp_buf, unzip, gz_buf, NULL);
+	else
+		opret = 0;
+	
+rerr:
+	LOG("exit call || 0x%X\n", opret);
+	EXIT_SYSCALL(state);
+	return opret;
+}
+
+// default_write [size] bytes from fsp buf to inactive [partition] @ [offset]
+int fwtool_write_partition(uint32_t offset, uint32_t size, uint8_t partition) {
+	if (size == 0 || size > 0x1000000 || (size % 0x200) != 0 || (offset % 0x200) != 0 || partition == 0)
+		return -1;
+	size = size / 0x200;
+	offset = offset / 0x200;
+	int state = 0, opret = -1;
+	ENTER_SYSCALL(state);
+	LOG("fwtool_write_partition 0x%X 0x%X %d (%s)\n", size, offset, partition, pcode_str[partition]);
+	
+	master_block_t *master = (master_block_t *)mbr;
+	int pno = find_part(master, partition, 0);
+	if (pno < 0)
+		goto werr;
+	
+	LOG("getting partition off...\n");
+	uint32_t main_off = master->partitions[pno].off;
+	if (main_off == 0 || (offset + size) > master->partitions[pno].sz)
+		goto werr;
+	
+	LOG("writing partition...\n");
+	if (default_write(main_off + offset, fsp_buf, size) < 0)
+		goto werr;
+	
+	opret = 0;
+werr:
+	LOG("exit call || 0x%X\n", opret);
+	EXIT_SYSCALL(state);
+	return opret;
+}
+
+// personalize bootloaders in fsp buf. set [fup] if should copy from bl buf first
+int fwtool_personalize_bl(int fup) {
+	int state = 0, opret = -1;
+	ENTER_SYSCALL(state);
+	LOG("fwtool_personalize_bl %d\n", fup);
+	if (fup) {
+		memset(bl_buf, 0, 0x400000);
+		memcpy(bl_buf, fsp_buf, 0x400000);
+		opret = personalize_buf(bl_buf);
+		memset(fsp_buf, 0, 0x400000);
+		memcpy(fsp_buf, bl_buf, 0x400000);
+		if (*(uint32_t *)fsp_buf != *(uint32_t *)bl_buf)
+			opret = -2;
+		if (opret >= 0)
+			use_new_bl = 1;
+	} else
+		opret = personalize_buf(fsp_buf);
+	LOG("exit call || 0x%X\n", opret);
+	EXIT_SYSCALL(state);
+	return opret;
+}
+
+// update the mbr with the new partition offsets. set args to apply
+int fwtool_update_mbr(int use_e2x, int swap_bl, int swap_os) {
+	int state = 0, opret = -1;
+	ENTER_SYSCALL(state);
+	LOG("fwtool_update_mbr %d %d (p%d) %d\n", use_e2x, swap_bl, use_new_bl, swap_os);
+	if (swap_bl && !use_new_bl)
+		goto merr;
+	
+	master_block_t *master = (master_block_t *)mbr;
+	uint8_t wp0 = 0, wp1 = 0;
+	
+	if (swap_os) {
+		LOG("updating os0 info...\n");
+		wp0 = find_part(master, 3, 0);
+		wp1 = find_part(master, 3, 1);
+		if (wp0 < 0 || wp1 < 0)
+			goto merr;
+		master->partitions[wp0].active = 1;
+		master->partitions[wp1].active = 0;
+		*(uint32_t *)(mbr + 0x44) = master->partitions[wp0].off;
+	}
+	
+	if (swap_bl) {
+		LOG("updating bootloaders info...\n");
+		wp0 = find_part(master, 2, 0);
+		wp1 = find_part(master, 2, 1);
+		if (wp0 < 0 || wp1 < 0)
+			goto merr;
+		master->partitions[wp0].active = 1;
+		master->partitions[wp1].active = 0;
+		*(uint32_t *)(mbr + 0x30) = *(uint32_t *)(bl_buf + 0x50) + master->partitions[wp0].off;
+		*(uint32_t *)(mbr + 0x34) = (uint32_t)(*(uint32_t *)(bl_buf + 0x54) / 0x200);
+		*(uint32_t *)(mbr + 0x38) = master->partitions[wp0].off;
+		if (*(uint32_t *)(mbr + 0x30) == 0)
+			goto merr;
+	}
+	
+	if (use_e2x) {
+		LOG("writing a backup MBR copy...\n");
+		if (default_write(1, mbr, 1) < 0)
+			goto merr;
+		LOG("enabling os0 redirect for e2x...\n");
+		wp1 = find_part(master, 3, 1);
+		if (wp1 < 0)
+			goto merr;
+		master->partitions[wp1].off = 2;
+	}
+	
+	LOG("writing the MBR...\n");
+	if (default_write(0, mbr, 1) < 0)
+		goto merr;
+	
+	opret = 0; // next is optional for compat
+	
+	if (swap_bl) {
+		LOG("writing a backup bootloaders copy...\n");
+		if (default_write(master->partitions[find_part(master, 2, 0)].off, bl_buf, master->partitions[find_part(master, 2, 1)].sz) < 0)
+			goto merr;
+	}
+	
+merr:
+	LOG("exit call || 0x%X\n", opret);
+	EXIT_SYSCALL(state);
+	return opret;
+}
+
+// write [size] bytes from fsp buf to sector 2
+int fwtool_flash_e2x(uint32_t size) {
+	if (size == 0 || size > 0x2E || (size % 0x200) != 0)
+		return -1;
+	size = size / 0x200;
+	int state = 0, opret = -1;
+	ENTER_SYSCALL(state);
+	LOG("fwtool_flash_e2x 0x%X\n", size);
+	
+	if (!is_prenso) {
+		LOG("cleaning the MBR...\n");
+		if (default_write(0, mbr, 1) < 0)
+			goto xerr;
+	}
+	
+	LOG("writing enso...\n");
+	if (default_write(2, fsp_buf, size) < 0)
+		goto xerr;
+	
+	opret = 0;
+xerr:
+	LOG("exit call || 0x%X\n", opret);
+	EXIT_SYSCALL(state);
+	return opret;
+}
+
+// remove bootloader SNVS fw checks
+int fwtool_unlink(void) {
+	int state = 0, opret = -1;
+	ENTER_SYSCALL(state);
+	LOG("fwtool_unlink\n");
+	opret = skip_bootloader_chk();
+	LOG("exit call || 0x%X\n", opret);
+	EXIT_SYSCALL(state);
+	return opret;
+}
+
+// misc
+int fwtool_talku(int cmd, int cmdbuf) {
+	int state = 0, opret = -1;
+	ENTER_SYSCALL(state);
+	
+	LOG("fwtool_talKU %d\n", cmd);
+	
+	switch(cmd) {
+		case 0: // set fwimage path
+			opret = ksceKernelMemcpyUserToKernel(src_k, cmdbuf, 64);
+			fwimage = src_k;
+			break;
+		case 1: // copy x200 from fwtool mbr buf to user buf
+		case 2: // copy x400000 from fwtool bl buf to user buf
+			opret = (cmd == 1) ? ksceKernelMemcpyKernelToUser(cmdbuf, mbr, 0x200) : ksceKernelMemcpyKernelToUser(cmdbuf, bl_buf, 0x400000);
+			break;
+		case 3: // copy x1000000 from gz buf to user buf
+		case 4: // copy x1000000 from fsp buf to user buf
+			opret = ksceKernelMemcpyKernelToUser(cmdbuf, (cmd == 3) ? gz_buf : fsp_buf, 0x1000000);
+			break;
+		case 5: // file debug logs flag
+			enable_f_logging = !enable_f_logging;
+			if (enable_f_logging)
+				LOG_START("file logging enabled\n");
+			opret = enable_f_logging;
+			break;
+		case 6: // check if user type = kernel type
+			opret = (cur_dev == (uint8_t)cmdbuf);
+			break;
+		case 7: // copy bl buf to fsp buf with bl checks
+			memset(fsp_buf, 0, 0x1000000);
+			cleainv_dcache(bl_buf, 0x400000);
+			memcpy(fsp_buf, bl_buf, 0x400000);
+			opret = (*(uint32_t *)fsp_buf == 0x32424c53) ? (*(uint32_t *)fsp_buf == *(uint32_t *)bl_buf) : 0;
+			cleainv_dcache(fsp_buf, 0x1000000);
+			break;
+		case 8: // unmount partition with id [cmdbuf]
+			ksceIoUmount(cmdbuf, 0, 0, 0);
+			ksceIoUmount(cmdbuf, 1, 0, 0);
+			opret = ksceIoMount(cmdbuf, NULL, 2, 0, 0, 0);
+			break;
+		case 9: // redirect writes to gc-sd & skip snvs bl sha update flag
+			redir_writes = !redir_writes;
+			opret = redir_writes;
+			break;
+		case 10: // mount custom blkpath as grw0
+			memset(cpart_k, 0, 64);
+			ksceKernelMemcpyUserToKernel(cpart_k, cmdbuf, 64);
+			opret = cmount_part(cpart_k);
+			break;
+		case 11: // update inactive bl sha256 in SNVS
+			opret = siofix(update_snvs_sha256);
+			break;
+		case 12: // get enso install state (err/0/1)
+			opret = is_prenso;
+			break;
+		case 13: // skip bl personalize
+			memset(bl_buf, 0, 0x400000);
+			memcpy(bl_buf, fsp_buf, 0x400000);
+			use_new_bl = 1;
+			opret = (*(uint32_t *)bl_buf == 0x32424c53) ? 0 : -1;
+			break;
+		case 14: // set fwrpoint path
+			opret = ksceKernelMemcpyUserToKernel(src_k, cmdbuf, 64);
+			fwrpoint = src_k;
+			break;
+		default:
+			break;
+	}
+	
+	LOG("exit call || 0x%X\n", opret);
+	EXIT_SYSCALL(state);
+	return opret;
 }
 
 void _start() __attribute__ ((weak, alias ("module_start")));
+int module_start(SceSize argc, const void *args)
+{
+	LOG_START("\nhello world from fwtool vx!\n");
+	LOG("initializing the patch ss...\n");
+	if (tai_init() < 0)
+		return SCE_KERNEL_START_FAILED;
+	upmgr_ln = ksceKernelSearchModuleByName("SceSblUpdateMgr");
+	if (upmgr_ln < 0)
+		return SCE_KERNEL_START_FAILED;
+	
+	LOG("reserving 32MB cached & 4MB uncached...\n");
+    ksceKernelGetMemBlockBase(ksceKernelAllocMemBlock("fsw_p", 0x10C0D006, 0x1000000, NULL), (void**)&fsp_buf);
+	ksceKernelGetMemBlockBase(ksceKernelAllocMemBlock("gz_p", 0x10C0D006, 0x1000000, NULL), (void**)&gz_buf);
+	ksceKernelGetMemBlockBase(ksceKernelAllocMemBlock("bl_p", 0x10C08006, 0x400000, NULL), (void**)&bl_buf);
+	if (fsp_buf == NULL || gz_buf == NULL || bl_buf == NULL)
+		return SCE_KERNEL_START_FAILED;
+	
+	memset(mbr, 0, 0x200);
+	fwimage = "ux0:data/fwtool/fwimage.bin";
+	fwrpoint = "ux0:data/fwtool/fwrpoint.bin";
+	
+	LOG("getting console info...\n");
+	fw = *(uint32_t *)(*(int *)(ksceKernelGetSysbase() + 0x6c) + 4);
+	cur_dev = ksceSblAimgrIsTest() ? 0 : (ksceSblAimgrIsTool() ? 1 : (ksceSblAimgrIsDEX() ? 2 : (ksceSblAimgrIsCEX() ? 3 : 4)));
+	emmc = ksceSdifGetSdContextPartValidateMmc(0);
+	is_prenso = get_enso_state();
+	if (is_prenso < 0)
+		return SCE_KERNEL_START_FAILED;
+	LOG("firmware: 0x%08X\ndevice: %s\nenso: %s\nemmctx: 0x%X\n", fw, target_dev[cur_dev], (is_prenso) ? "YES" : "NO", emmc);
+	if (fw < 0x03600000 || fw > 0x03730011 || emmc == 0 || ksceSdifReadSectorMmc(emmc, 0, mbr, 1) < 0)
+		return SCE_KERNEL_START_FAILED;
+	
+	LOG("init done\n\n---------WAITING_4_U_CMDN---------\n\n");
+	
+	return SCE_KERNEL_START_SUCCESS;
+}
 
 int module_stop(SceSize argc, const void *args)
 {

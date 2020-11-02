@@ -2,7 +2,7 @@ fwtoolkernel:
   attributes: 0
   version:
     major: 1
-    minor: 1
+    minor: 2
   main:
     start: module_start
     stop: module_stop
@@ -10,4 +10,12 @@ fwtoolkernel:
     fwtoolkernel:
       syscall: true
       functions:
-        - fwtool_cmd_handler
+        - fwtool_talku
+        - fwtool_flash_e2x
+        - fwtool_update_mbr
+        - fwtool_personalize_bl
+        - fwtool_write_partition
+        - fwtool_read_fwimage
+        - fwtool_unlink
+        - fwtool_read_to_fwrpoint
+        - fwtool_write_from_fwrpoint

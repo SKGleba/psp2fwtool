@@ -1,69 +1,90 @@
-#include "tai_compat.h"
+#include <stdio.h>
+#include <string.h>
+#include <taihen.h>
+#include <vitasdkkern.h>
 
-static int sce_to_tai_module_info(SceUID pid, void *sceinfo, tai_module_info_t *taiinfo) {
-  char *info;
-  if (taiinfo->size < sizeof(tai_module_info_t)) {
-    return -1;
-  }
-  info = (char *)sceinfo;
-    taiinfo->modid = *(SceUID *)(info + 0xC);
-    snprintf(taiinfo->name, 27, "%s", *(const char **)(info + 0x1C));
-    taiinfo->name[26] = '\0';
-    taiinfo->module_nid = *(uint32_t *)(info + 0x30);
-    taiinfo->exports_start = *(uintptr_t *)(info + 0x20);
-    taiinfo->exports_end = *(uintptr_t *)(info + 0x24);
-    taiinfo->imports_start = *(uintptr_t *)(info + 0x28);
-    taiinfo->imports_end = *(uintptr_t *)(info + 0x2C);
-  return 1;
-}
+static int (* cleainv_dcache)(void *addr, uint32_t size) = NULL; // DcacheCleanInvalidateRange
+static int (* get_mod_info)(SceUID pid, SceUID modid, SceKernelModuleInfo *sceinfo_op) = NULL; // GetModuleInfo
 
+#define DACR_OFF(stmt) \
+do { \
+	unsigned prev_dacr;	\
+	__asm__ volatile(	\
+		"mrc p15, 0, %0, c3, c0, 0 \n" \
+		: "=r" (prev_dacr) \
+	); \
+	__asm__ volatile(	\
+		"mcr p15, 0, %0, c3, c0, 0 \n" \
+		: : "r" (0xFFFF0000) \
+	); \
+	stmt;	\
+	__asm__ volatile(	\
+		"mcr p15, 0, %0, c3, c0, 0 \n" \
+		: : "r" (prev_dacr)	\
+	); \
+} while (0)
+
+// [sz]B @ [data] -> [name] @ [off]
+#define INJECT(name, off, data, sz) \
+do {\
+	uintptr_t addr;					\
+	int modid = ksceKernelSearchModuleByName(name); \
+	if (modid >= 0) {	\
+		module_get_offset(KERNEL_PID, modid, 0, off, &addr); \
+		DACR_OFF(memcpy((void *)addr, (void *)data, sz););	\
+		cleainv_dcache(addr, sz); \
+	}									\
+} while (0)
+	
+// [sz]B @ [data] -> [modid] @ [off]
+#define INJECT_NOGET(modid, off, data, sz) \
+do {\
+	uintptr_t addr;					\
+	module_get_offset(KERNEL_PID, modid, 0, off, &addr); \
+	DACR_OFF(memcpy((void *)addr, (void *)data, sz););	\
+	cleainv_dcache(addr, sz); \
+} while (0)
+
+// taihen's module_get_offset
 int module_get_offset(SceUID pid, SceUID modid, int segidx, size_t offset, uintptr_t *addr) {
-  SceKernelModuleInfo sceinfo;
-  size_t count;
-  int ret;
-  if (segidx > 3) {
-    return -1;
-  }
-  sceinfo.size = sizeof(sceinfo);
-  ret = ksceKernelGetModuleInfo(pid, modid, &sceinfo);
-  if (ret < 0) {
-    return ret;
-  }
-  if (offset > sceinfo.segments[segidx].memsz) {
-    return -1;
-  }
-  *addr = (uintptr_t)sceinfo.segments[segidx].vaddr + offset;
-  return 1;
+	SceKernelModuleInfo sceinfo;
+	size_t count;
+	int ret;
+	if (segidx > 3)
+		return -1;
+	sceinfo.size = sizeof(sceinfo);
+	if (get_mod_info == NULL)
+		return -1;
+	ret = get_mod_info(pid, modid, &sceinfo);
+	if (ret < 0)
+		return ret;
+	if (offset > sceinfo.segments[segidx].memsz)
+		return -1;
+	*addr = (uintptr_t)sceinfo.segments[segidx].vaddr + offset;
+	return 1;
 }
 
-int module_get_by_name_nid(SceUID pid, const char *name, tai_module_info_t *info) {
-  SceUID modlist[MOD_LIST_SIZE];
-  void *sceinfo;
-  size_t count;
-  int ret;
-  int get_cur;
-  uint32_t nid = TAI_IGNORE_MODULE_NID;
-  get_cur = (name == NULL && nid == TAI_IGNORE_MODULE_NID);
-  count = MOD_LIST_SIZE;
-  ret = ksceKernelGetModuleList(pid, 0xff, 1, modlist, &count);
-  if (ret < 0) {
-    return ret;
-  } else if (count == MOD_LIST_SIZE) {
-    return -1;
-  }
-  for (int i = (count - 1); i >= 0; i--) {
-    ret = ksceKernelGetModuleInternal(modlist[i], &sceinfo);
-    if (ret < 0) {
-      return ret;
-    }
-    if ((ret = sce_to_tai_module_info(pid, sceinfo, info)) < 0) {
-      return ret;
-    }
-    if (name != NULL && strncmp(name, info->name, 27) == 0) {
-      if (nid == TAI_IGNORE_MODULE_NID || info->module_nid == nid) {
-        return 1;
-      }
-    }
-  }
-  return -2;
+/*
+ sets the getModuleInfo & cleanDcache ptr and returns
+ * 0 if fw is probably 3.60
+ * 1 if fw is probably 3.65
+ * -1 if bad fw or other error
+*/
+int tai_init(void) {
+	char stuz[4];
+	int tifwv = 1, sysmemid = ksceKernelSearchModuleByName("SceSysmem");
+	stuz[0] = *(uint8_t *)ksceKernelSearchModuleByName;
+	stuz[1] = (*(uint8_t *)(ksceKernelSearchModuleByName + 1) - 0xC0) + (*(uint8_t *)(ksceKernelSearchModuleByName + 2) * 0x10);
+	stuz[2] = *(uint8_t *)(ksceKernelSearchModuleByName + 4);
+	stuz[3] = (*(uint8_t *)(ksceKernelSearchModuleByName + 5) - 0xC0) + (*(uint8_t *)(ksceKernelSearchModuleByName + 6) - 0x40);
+	get_mod_info = (void *)(*(uint32_t *)stuz) + 0x30b4; // ksceKernelSearchModuleByName is @ 0x3d00
+	if (*(uint16_t *)get_mod_info != 0x83b5) {
+		get_mod_info = (void *)(*(uint32_t *)stuz) + 0x476c;
+		if (*(uint16_t *)get_mod_info != 0x83b5)
+			return -1;
+		tifwv = 0;
+	}
+	if (module_get_offset(KERNEL_PID, sysmemid, 0, 0x21719, &cleainv_dcache) < 1)
+		return -1;
+	return tifwv;
 }
