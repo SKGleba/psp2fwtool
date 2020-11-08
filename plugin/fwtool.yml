@@ -17,5 +17,4 @@ fwtoolkernel:
         - fwtool_write_partition
         - fwtool_read_fwimage
         - fwtool_unlink
-        - fwtool_read_to_fwrpoint
-        - fwtool_write_from_fwrpoint
+        - fwtool_rw_emmcimg

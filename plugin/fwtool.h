@@ -1,10 +1,11 @@
 #define LOG_LOC "ux0:data/fwtool/log.txt"
+#define FWTOOL_VERSION_STR "FWTOOL v1.0 by SKGleba"
 
 #define ARRAYSIZE(x) ((sizeof(x)/sizeof(0[x])) / ((size_t)(!(sizeof(x) % sizeof(0[x])))))
 
 static char *pcode_str[] = {
 	"empty",
-	"first_partition",
+	"idstorage",
 	"slb2",
 	"os0",
 	"vs0",
@@ -16,9 +17,9 @@ static char *pcode_str[] = {
 	"grw0",
 	"ud0",
 	"sa0",
-	"some_data",
+	"mediaid",
 	"pd0",
-	"invalid"
+	"unused" // actual valid partition
 };
 	
 static char *target_dev[] = {
@@ -31,28 +32,13 @@ static char *target_dev[] = {
 	"NOCHK"
 };
 
-typedef struct {
-	uint16_t magic;
-	uint8_t part_id;
-	uint8_t type;
-	uint32_t offset;
-	uint32_t size;
-	char sha256[0x20];
-} __attribute__((packed)) rpoint_entry;
-
 typedef struct{
 	uint32_t magic;
+	uint32_t size;
 	char target[0x10];
-	rpoint_entry e2x;
-	rpoint_entry ids;
-	rpoint_entry cbl;
-	rpoint_entry fir;
-	rpoint_entry sof;
-	rpoint_entry act;
-	rpoint_entry reg;
-	rpoint_entry iux;
-	rpoint_entry iur;
-} __attribute__((packed)) rpoint_super;
+	uint32_t blk_crc[0xed];
+	uint32_t prev_crc;
+} __attribute__((packed)) emmcimg_super;
 
 typedef struct {
 	uint16_t magic;

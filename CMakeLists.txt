@@ -20,76 +20,8 @@ set(CMAKE_C_FLAGS "-Wl,-q -Wall -O3 -std=gnu99")
 set(CMAKE_CXX_FLAGS "${CMAKE_C_FLAGS} -std=c++11 -fno-rtti -fno-exceptions")
 
 include_directories(
+
 )
-
-link_directories(
-	${CMAKE_CURRENT_BINARY_DIR}
-	${CMAKE_BINARY_DIR}/fwtoolkernel_stubs
-)
-
-add_executable(fwtool_main.elf
-	app/fwimg/main.c
-	app/fwimg/debugScreenFont.c
-)
-
-target_link_libraries(fwtool_main.elf
-	taihen_stub
-	SceDisplay_stub
-	SceCtrl_stub
-	fwtoolkernel_stub
-	SceAppMgr_stub
-	SceLibc_stub
-	ScePower_stub 
-	SceVshBridge_stub
-)
-
-add_custom_target(fwtool_main.velf ALL
-	COMMAND vita-elf-create fwtool_main.elf fwtool_main.velf
-)
-
-add_custom_target(fwtool_main.bin ALL
-	COMMAND vita-make-fself -c fwtool_main.velf fwtool_main.bin
-)
-
-add_executable(compile_app.elf
-	app/main/main.c
-	app/main/debugScreenFont.c
-)
-
-target_link_libraries(compile_app.elf
-	taihen_stub
-	SceDisplay_stub
-	SceCtrl_stub
-	SceAppMgr_stub
-	ScePower_stub 
-	SceVshBridge_stub
-)
-
-add_custom_target(compile_app.velf ALL
-	COMMAND vita-elf-create compile_app.elf compile_app.velf
-)
-
-add_custom_target(compile_eboot.bin ALL
-	COMMAND vita-make-fself -c compile_app.velf compile_eboot.bin
-)
-
-add_custom_target(${PROJECT_NAME}.vpk ALL
-	COMMAND vita-mksfoex -s TITLE_ID=${TITLE_ID} "${TITLE_NAME}" compile_param.sfo
-	COMMAND vita-pack-vpk -s compile_param.sfo -b compile_eboot.bin -a compile_fwtool.skprx=fwtool.skprx 
-	-a res/icon0.png=sce_sys/icon0.png ${PROJECT_NAME}.vpk
-	-a res/template.xml=sce_sys/livearea/contents/template.xml
-	-a res/bg.png=sce_sys/livearea/contents/bg.png
-	-a res/startup.png=sce_sys/livearea/contents/startup.png
-	-a fwtool_main.bin=fwimg.bin
-)
-
-add_dependencies(fwtool_main.velf fwtool_main.elf)
-add_dependencies(fwtool_main.bin fwtool_main.velf)
-add_dependencies(${PROJECT_NAME}.vpk fwtool_main.bin)
-
-add_dependencies(compile_app.velf compile_app.elf)
-add_dependencies(compile_eboot.bin compile_app.velf)
-add_dependencies(${PROJECT_NAME}.vpk compile_eboot.bin)
 
 vita_create_stubs(fwtoolkernel_stubs compile_fwtool.elf ${CMAKE_SOURCE_DIR}/plugin/fwtool.yml KERNEL)
 
@@ -127,4 +59,47 @@ add_custom_target(compile_fwtool.skprx ALL
 	COMMAND vita-elf-create -e ${CMAKE_SOURCE_DIR}/plugin/fwtool.yml compile_fwtool.elf compile_fwtool.velf
 	COMMAND vita-make-fself -c compile_fwtool.velf compile_fwtool.skprx
 )
+
 add_dependencies(compile_fwtool.skprx compile_fwtool.elf)
+
+link_directories(
+	${CMAKE_CURRENT_BINARY_DIR}
+	${CMAKE_BINARY_DIR}/fwtoolkernel_stubs
+)
+
+add_executable(compile_app.elf
+	app/main.c
+	app/debugScreenFont.c
+)
+
+target_link_libraries(compile_app.elf
+	taihen_stub
+	SceDisplay_stub
+	SceCtrl_stub
+	fwtoolkernel_stub
+	SceAppMgr_stub
+	ScePower_stub 
+	SceVshBridge_stub
+)
+
+add_custom_target(compile_app.velf ALL
+	COMMAND vita-elf-create compile_app.elf compile_app.velf
+)
+
+add_custom_target(compile_eboot.bin ALL
+	COMMAND vita-make-fself -c compile_app.velf compile_eboot.bin
+)
+
+add_dependencies(compile_app.velf compile_app.elf)
+add_dependencies(compile_eboot.bin compile_app.velf)
+
+add_custom_target(${PROJECT_NAME}.vpk ALL
+	COMMAND vita-mksfoex -s TITLE_ID=${TITLE_ID} "${TITLE_NAME}" compile_param.sfo
+	COMMAND vita-pack-vpk -s compile_param.sfo -b compile_eboot.bin -a compile_fwtool.skprx=fwtool.skprx 
+	-a res/icon0.png=sce_sys/icon0.png ${PROJECT_NAME}.vpk
+	-a res/template.xml=sce_sys/livearea/contents/template.xml
+	-a res/bg.png=sce_sys/livearea/contents/bg.png
+	-a res/startup.png=sce_sys/livearea/contents/startup.png
+)
+
+add_dependencies(${PROJECT_NAME}.vpk compile_eboot.bin compile_fwtool.skprx)

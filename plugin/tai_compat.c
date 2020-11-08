@@ -27,28 +27,27 @@ do { \
 // [sz]B @ [data] -> [name] @ [off]
 #define INJECT(name, off, data, sz) \
 do {\
-	uintptr_t addr;					\
+	uintptr_t addr = 0;					\
 	int modid = ksceKernelSearchModuleByName(name); \
 	if (modid >= 0) {	\
 		module_get_offset(KERNEL_PID, modid, 0, off, &addr); \
 		DACR_OFF(memcpy((void *)addr, (void *)data, sz););	\
-		cleainv_dcache(addr, sz); \
+		cleainv_dcache((void *)addr, sz); \
 	}									\
 } while (0)
 	
 // [sz]B @ [data] -> [modid] @ [off]
 #define INJECT_NOGET(modid, off, data, sz) \
 do {\
-	uintptr_t addr;					\
+	uintptr_t addr = 0;					\
 	module_get_offset(KERNEL_PID, modid, 0, off, &addr); \
 	DACR_OFF(memcpy((void *)addr, (void *)data, sz););	\
-	cleainv_dcache(addr, sz); \
+	cleainv_dcache((void *)addr, sz); \
 } while (0)
 
 // taihen's module_get_offset
 int module_get_offset(SceUID pid, SceUID modid, int segidx, size_t offset, uintptr_t *addr) {
 	SceKernelModuleInfo sceinfo;
-	size_t count;
 	int ret;
 	if (segidx > 3)
 		return -1;
@@ -84,7 +83,7 @@ int tai_init(void) {
 			return -1;
 		tifwv = 0;
 	}
-	if (module_get_offset(KERNEL_PID, sysmemid, 0, 0x21719, &cleainv_dcache) < 1)
+	if (module_get_offset(KERNEL_PID, sysmemid, 0, 0x21719, (uintptr_t *)&cleainv_dcache) < 1)
 		return -1;
 	return tifwv;
 }

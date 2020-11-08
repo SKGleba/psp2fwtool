@@ -12,14 +12,12 @@ Firmware manager for Playstation Vita/TV
  - logging system with both file and stdout dst
  - writes redirect safety system/dry run mode
  - all possible errors handled
- 
-## What needs testing:
  - [BIG] full fwimage installer
  - restore point r/w (kernel)
- 
+ - [BIG] restore point (emmc) creator
+ - [BIG] restore point (emmc) flasher
+
 ## TODO:
- - [BIG] restore point creator
- - [BIG] restore point flasher
  - docs
 
 ### Waiting for 3.74 be like...

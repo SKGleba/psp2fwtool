@@ -7,8 +7,9 @@ static uint32_t fw = 0;
 static SceIoDevice custom;
 char *fwimage = NULL, *fwrpoint = NULL;
 void *fsp_buf = NULL, *gz_buf = NULL, *bl_buf = NULL;
-static char src_k[64], mbr[0x200], cpart_k[64];
-static int emmc = 0, cur_dev = 0, use_new_bl = 0, redir_writes = 0, upmgr_ln = 0, is_prenso = 0;
+static char src_k[64], mbr[0x200], cpart_k[64], real_mbr[0x200];
+static int (* read_real_mmc)(int target, uint32_t off, void *dst, uint32_t sz) = NULL;
+static int emmc = 0, cur_dev = 0, use_new_bl = 0, redir_writes = 0, upmgr_ln = 0, is_prenso = 0, is_locked = 0, skip_int_chk = 0;
 
 /* 
 	BYPASS1: Skip firmware ver checks on bootloaders 0xdeadbeef
@@ -18,7 +19,7 @@ static int emmc = 0, cur_dev = 0, use_new_bl = 0, redir_writes = 0, upmgr_ln = 0
 */
 static int skip_bootloader_chk(void) {
 	uint32_t arg0 = 0, arg1 = 0;
-	int (* init_sc)() = NULL, (* prep_sm)() = NULL;
+	int (* init_sc)(uint32_t *pm0, uint32_t *pm1) = NULL, (* prep_sm)(uint32_t *pm0, uint32_t *pm1, int mode, int ctx) = NULL;
 	LOG("skip_bootloader_chk\n");
 	if (upmgr_ln < 0)
 		return upmgr_ln;
@@ -38,14 +39,14 @@ static int skip_bootloader_chk(void) {
 	INJECT_NOGET(upmgr_ln, 0x8944, nop_32, 4);
 
 	// get req funcs
-	module_get_offset(KERNEL_PID, upmgr_ln, 0, 0x8639, &prep_sm);
-	module_get_offset(KERNEL_PID, upmgr_ln, 0, 0x8705, &init_sc);
+	module_get_offset(KERNEL_PID, upmgr_ln, 0, 0x8639, (uintptr_t *)&prep_sm);
+	module_get_offset(KERNEL_PID, upmgr_ln, 0, 0x8705, (uintptr_t *)&init_sc);
 	if (prep_sm == NULL || init_sc == NULL)
 		return -1;
 
 	LOG("starting update sm...\n");
 	// load SM, get PMx2
-	if (prep_sm(&arg0, &arg1, 1, 0xffffffff) < 0)
+	if (prep_sm(&arg0, &arg1, 1, -1) < 0)
 		return -1;
 
 	// pointless but always fun
@@ -64,13 +65,13 @@ static int skip_bootloader_chk(void) {
 
 // Personalize slb2 data @ bufaddr
 static int personalize_buf(void *bufaddr) {
-	int ret = -1, (* personalize_slsk)() = NULL;
+	int ret = -1, (* personalize_slsk)(const char *enc_in, const char *enc_out, const char *dbg_enp_in, const char *dbg_enp_out, void *workbuf) = NULL;
 	LOG("personalize_buf\n");
 	if (upmgr_ln < 0)
 		return ret;
 	
 	// get req func, same for 3.60-3.73
-	module_get_offset(KERNEL_PID, upmgr_ln, 0, 0x58c5, &personalize_slsk);
+	module_get_offset(KERNEL_PID, upmgr_ln, 0, 0x58c5, (uintptr_t *)&personalize_slsk);
 	if (personalize_slsk == NULL)
 		return -1;
 	
@@ -87,13 +88,15 @@ static int personalize_buf(void *bufaddr) {
 	return ret;
 }
 
-// cmp crc of first 0x200 bytes of srcbuf with expected crc
-uint32_t check_block_crc32(void *buf, uint32_t exp_crc) {
-	char crcbuf[0x200];
-	memcpy(&crcbuf, buf, 0x200);
-	uint32_t crc = crc32(0, &crcbuf, 0x200);
+// cmp crc of first [size] bytes of [buf] with [exp_crc]
+uint32_t cmp_crc32(uint32_t exp_crc, void *buf, uint32_t size) {
+	if (skip_int_chk || exp_crc == 0) {
+		LOG("skipping crc checks\n");
+		return 0;
+	}
+	uint32_t crc = crc32(0, buf, size);
 	LOG("ccrc 0x%X vs 0x%X\n", crc, exp_crc);
-	if (exp_crc > 0 && exp_crc != crc)
+	if (exp_crc != crc)
 		return -1;
 	return 0;
 }
@@ -124,30 +127,25 @@ cleanup:
 	return ret;
 }
 
-// get enso install status (err/0/1)
+// get enso install status (0/1)
 int get_enso_state(void) {
-	int (* read_mmc)() = NULL;
-	int mmctx = ksceSdifGetSdContextPartValidateMmc(0);
-	char mbr_char[0x200], sbr_char[0x200], rmbr_char[0x200];
-	ksceSdifReadSectorMmc(mmctx, 1, &sbr_char, 1);
-	if (memcmp(&sbr_char, "Sony Computer Entertainment Inc.", 0x20) == 0) {
-		ksceSdifReadSectorMmc(mmctx, 0, &mbr_char, 1);
-		if (memcmp(&mbr_char, &sbr_char, 0x200) == 0) {
-			if (module_get_offset(KERNEL_PID, ksceKernelSearchModuleByName("SceSdif"), 0, 0x3e7d, &read_mmc) < 0
-			|| read_mmc == NULL)
-				return -1;
-			read_mmc(mmctx, 0, &rmbr_char, 1);
-			if (memcmp(&mbr_char, &rmbr_char, 0x200) != 0)
-				return 1;
-		}
-	}
+	char sbr_char[0x200];
+	ksceSdifReadSectorMmc(emmc, 1, &sbr_char, 1);
+	if (memcmp(sbr_char, "Sony Computer Entertainment Inc.", 0x20) == 0
+	&& memcmp(mbr, sbr_char, 0x200) == 0
+	&& memcmp(mbr, real_mbr, 0x200) != 0)
+		return 1;
 	return 0;
 }
 
 // mount [blkn] as grw0:
 int cmount_part(const char *blkn) {
+	LOG("cmount_part %s\n", blkn);
 	SceIoMountPoint *(* sceIoFindMountPoint)(int id) = NULL;
-	if (module_get_offset(KERNEL_PID, ksceKernelSearchModuleByName("SceIofilemgr"), 0, (fw > 0x03630000) ? 0x182f5 : 0x138c1, (uintptr_t *)&sceIoFindMountPoint) < 0
+	uint32_t iofindmp_off = (fw > 0x03630000) ? 0x182f5 : 0x138c1;
+	if (fw > 0x03680011)
+		iofindmp_off = 0x18735;
+	if (module_get_offset(KERNEL_PID, ksceKernelSearchModuleByName("SceIofilemgr"), 0, iofindmp_off, (uintptr_t *)&sceIoFindMountPoint) < 0
 	|| sceIoFindMountPoint == NULL)
 		return -1;
 	SceIoMountPoint *mountp;
@@ -159,6 +157,7 @@ int cmount_part(const char *blkn) {
 	custom.blkdev = custom.blkdev2 = blkn;
 	custom.id = 0xA00;
 	DACR_OFF(mountp->dev = &custom;);
+	LOG("remounting...\n");
 	ksceIoUmount(0xA00, 0, 0, 0);
 	ksceIoUmount(0xA00, 1, 0, 0);
 	return ksceIoMount(0xA00, NULL, 0, 0, 0, 0);
@@ -175,7 +174,7 @@ int update_snvs_sha256(void) {
 	LOG("%s bl sha256 to SNVS...\n", (redir_writes) ? "SKIP write of" : "WRITING");
 	if (redir_writes)
 		return 0;
-	module_get_offset(KERNEL_PID, upmgr_ln, 0, 0x854d, &snvs_update_bl_sha);
+	module_get_offset(KERNEL_PID, upmgr_ln, 0, 0x854d, (uintptr_t *)&snvs_update_bl_sha);
 	if (snvs_update_bl_sha == NULL)
 		return ret;
 	ret = snvs_update_bl_sha(9, 0x20, bl_hash, 0x20, 1, -1);
@@ -186,7 +185,7 @@ int update_snvs_sha256(void) {
 // default storage write func
 int default_write(uint32_t off, void *buf, uint32_t sz) {
 	LOG("BLKWRITE 0x%X @ 0x%X to %s\n", sz, off, (redir_writes) ? "GC-SD" : "EMMC");
-	if (off == 0 && sz > 1)
+	if (off == 0 && sz > 1 && sz != 0x8000)
 		return -1;
 	if (redir_writes) {
 		if (ksceSdifWriteSectorSd(ksceSdifGetSdContextPartValidateSd(1), off, buf, sz) < 0)
@@ -196,83 +195,69 @@ int default_write(uint32_t off, void *buf, uint32_t sz) {
 	return ksceSdifWriteSectorMmc(emmc, off, buf, sz);
 }
 
-// write [partition] to fwrpoint @ [offset] from emmc, copy buf sha256 to output if !null
-int fwtool_read_to_fwrpoint(uint32_t offset, void *sha256_u, uint8_t partition) {
-	if (offset == 0 || partition == 0)
-		return -1;
+// [dump]/restore emmc to/from fwrpoint
+int fwtool_rw_emmcimg(int dump) {
 	int state = 0, opret = -1;
 	ENTER_SYSCALL(state);
+	LOG("fwtool_rw_emmcimg %s (%d)\n", fwrpoint, dump);
 	
-	int calc_dig = !(sha256_u == NULL);
-	LOG("fwtool_read_to_fwrpoint %d 0x%X | calc %d\n", partition, offset, calc_dig);
-	char sha256_c[0x20];
-	memset(sha256_c, 0, 0x20);
+	int fd = 0, crcn = 0;
+	uint32_t copied = 0, size = 0;
 	memset(fsp_buf, 0, 0x1000000);
-	
-	LOG("getting partition off...\n");
-	uint32_t main_off = 0, size = 0;
-	int pno = 0;
-	master_block_t *master = (master_block_t *)mbr;
-	if (partition == 0x69) {
-		LOG("e2x mode\n");
-		pno = find_part(master, 1, 0);
-		if (pno < 0 || (0x2E > (master->partitions[pno].off - 2)))
-			goto derr;
-		main_off = 2;
-		size = 0x2E;
+	emmcimg_super img_super;
+	memset(&img_super, 0, sizeof(emmcimg_super));
+	master_block_t *master = (master_block_t *)real_mbr;
+	if (dump > 0) {
+		size = (dump == 2) ? master->partitions[find_part(master, 7, 0)].off : master->device_size;
+		img_super.magic = 0xC00F2020;
+		img_super.size = size;
+		LOG("dumping (0x%X blocks)...\n", size);
+		fd = ksceIoOpen(fwrpoint, SCE_O_WRONLY | SCE_O_TRUNC | SCE_O_CREAT, 6);
+		if (size == 0 || fd < 0 || ksceIoWrite(fd, &img_super, sizeof(emmcimg_super)) < 0)
+			goto exrwend;
+		while((copied + 0x8000) <= size) {
+			if (read_real_mmc(emmc, copied, fsp_buf, 0x8000) < 0
+			|| ksceIoPwrite(fd, fsp_buf, 0x8000 * 0x200, sizeof(emmcimg_super) + (copied * 0x200)) < 0)
+				goto exrwend;
+			img_super.blk_crc[crcn] = crc32(0, fsp_buf, 0x8000 * 0x200);
+			crcn-=-1;
+			copied-=-0x8000;
+		}
+		if (copied < size && (size - copied) <= 0x8000) {
+			if (read_real_mmc(emmc, copied, fsp_buf, (size - copied)) < 0
+			|| ksceIoPwrite(fd, fsp_buf, (size - copied) * 0x200, sizeof(emmcimg_super) + (copied * 0x200)) < 0)
+				goto exrwend;
+			img_super.blk_crc[crcn] = crc32(0, fsp_buf, (size - copied) * 0x200);
+			copied = size;
+		}
+		img_super.prev_crc = crc32(0, img_super.blk_crc, 0xed * 4);
+		LOG("master crc 0x%X\n", img_super.prev_crc);
+		if (img_super.blk_crc[0] == 0 || ksceIoPwrite(fd, &img_super, sizeof(emmcimg_super), 0) < 0)
+			goto exrwend;
 	} else {
-		master_block_t *master = (master_block_t *)mbr;
-		pno = find_part(master, partition, 0);
-		if (pno < 0)
-			goto derr;
-		main_off = master->partitions[pno].off;
-		size = master->partitions[pno].sz;
-	}
-	if (main_off == 0)
-		goto derr;
-	
-	LOG("opening fwrpoint...\n");
-	SceIoStat stat;
-	int ret = ksceIoGetstat(fwrpoint, &stat);
-	if (ret < 0 || offset > stat.st_size)
-		goto derr;
-	int fd = ksceIoOpen(fwrpoint, SCE_O_WRONLY, 6);
-	
-	LOG("starting write (big) 0x%X...\n", size);
-	uint32_t copied = 0;
-	while((copied + 0x8000) <= size) { // first copy with full buffer
-		ret = ksceSdifReadSectorMmc(emmc, main_off + copied, fsp_buf, 0x8000);
-		if (ret < 0)
-			goto fwlend;
-		if (calc_dig) {
-			LOG("sha256-checking the buf...\n");
-			if (ksceSha256Digest(fsp_buf, 0x1000000, sha256_c) < 0)
-				goto fwlend;
-			if (ksceKernelMemcpyKernelToUser(sha256_u, sha256_c, 0x20) < 0)
-				goto fwlend;
+		LOG("getting image size...\n");
+		fd = ksceIoOpen(fwrpoint, SCE_O_RDONLY, 0);
+		if (fd < 0 || ksceIoRead(fd, &img_super, sizeof(emmcimg_super)) < 0)
+			goto exrwend;
+		size = img_super.size;
+		if (img_super.magic != 0xC00F2020 || size == 0 || img_super.blk_crc[0] == 0 || cmp_crc32(img_super.prev_crc, img_super.blk_crc, 0xed * 4) < 0)
+			goto exrwend;
+		LOG("restoring (0x%X blocks)...\n", size);
+		while((copied + 0x8000) <= size) {
+			if (ksceIoPread(fd, fsp_buf, 0x8000 * 0x200, sizeof(emmcimg_super) + (copied * 0x200)) < 0
+			|| cmp_crc32(img_super.blk_crc[crcn], fsp_buf, 0x8000 * 0x200) < 0
+			|| default_write(copied, fsp_buf, 0x8000) < 0)
+				goto exrwend;
+			crcn-=-1;
+			copied-=-0x8000;
 		}
-		ret = ksceIoPwrite(fd, fsp_buf, 0x1000000, offset + (copied * 0x200));
-		if (ret < 0)
-			goto fwlend;
-		copied = copied + 0x8000;
-	}
-	
-	if (copied < size && (size - copied) <= 0x8000) { // then copy the remaining data
-		LOG("starting write (small) 0x%X...\n", (size - copied));
-		ret = ksceSdifReadSectorMmc(emmc, main_off + copied, fsp_buf, (size - copied));
-		if (ret < 0)
-			goto fwlend;
-		if (calc_dig) {
-			LOG("sha256-checking the buf...\n");
-			if (ksceSha256Digest(fsp_buf, 0x1000000, sha256_c) < 0)
-				goto fwlend;
-			if (ksceKernelMemcpyKernelToUser(sha256_u, sha256_c, 0x20) < 0)
-				goto fwlend;
+		if (copied < size && (size - copied) <= 0x8000) {
+			if (ksceIoPread(fd, fsp_buf, (size - copied) * 0x200, sizeof(emmcimg_super) + (copied * 0x200)) < 0
+			|| cmp_crc32(img_super.blk_crc[crcn], fsp_buf, (size - copied) * 0x200) < 0
+			|| default_write(copied, fsp_buf, (size - copied)) < 0)
+				goto exrwend;
+			copied = size;
 		}
-		ret = ksceIoPread(fd, fsp_buf, (size - copied) * 0x200, offset + (copied * 0x200));
-		if (ret < 0)
-			goto fwlend;
-		copied = size;
 	}
 	
 	LOG("write done 0x%X=0x%X?\n", copied, size);
@@ -281,120 +266,20 @@ int fwtool_read_to_fwrpoint(uint32_t offset, void *sha256_u, uint8_t partition) 
 	else
 		opret = 0;
 	
-fwlend:
+exrwend:
 	ksceIoClose(fd);
-derr:
 	LOG("exit call || 0x%X\n", opret);
 	EXIT_SYSCALL(state);
 	return opret;
 }
 
-// write [size] bytes from fwrpoint @ [offset] to [partition] if sha256 matches one in [sha256_u]
-int fwtool_write_from_fwrpoint(uint32_t offset, uint32_t size, void *sha256_u, uint8_t partition) {
-	if (offset == 0 || size == 0 || (size % 0x200) != 0 || partition == 0)
-		return -1;
-	size = size / 0x200;
-	int state = 0, opret = -1;
-	ENTER_SYSCALL(state);
-	
-	int calc_dig = !(sha256_u == NULL);
-	LOG("fwtool_write_from_fwrpoint %d 0x%X 0x%X | calc %d\n", partition, offset, size, calc_dig);
-	char sha256_k[0x20], sha256_c[0x20];
-	memset(sha256_c, 0, 0x20);
-	
-	if (calc_dig && (ksceKernelMemcpyUserToKernel(sha256_k, sha256_u, 0x20) < 0))
-		goto perr;
-	
-	memset(fsp_buf, 0, 0x1000000);
-	
-	LOG("getting partition off...\n");
-	uint32_t main_off = 0;
-	int pno = 0;
-	master_block_t *master = (master_block_t *)mbr;
-	if (partition == 0x69) {
-		LOG("e2x mode\n");
-		pno = find_part(master, 1, 0);
-		if (pno < 0 || (size > (master->partitions[pno].off - 2)))
-			goto perr;
-		main_off = 2;
-	} else {
-		master_block_t *master = (master_block_t *)mbr;
-		pno = find_part(master, partition, 0);
-		if (pno < 0)
-			goto perr;
-		main_off = master->partitions[pno].off;
-		if (size > master->partitions[pno].sz)
-			goto perr;
-	}
-	if (main_off == 0)
-		goto perr;
-	
-	LOG("opening fwrpoint...\n");
-	SceIoStat stat;
-	int ret = ksceIoGetstat(fwrpoint, &stat);
-	if (ret < 0 || stat.st_size < (offset + (size * 0x200)))
-		goto perr;
-	int fd = ksceIoOpen(fwrpoint, SCE_O_RDONLY, 0);
-	
-	LOG("starting write (big) 0x%X...\n", size);
-	uint32_t copied = 0;
-	while((copied + 0x8000) <= size) { // first copy with full buffer
-		opret = ksceIoPread(fd, fsp_buf, 0x1000000, offset + (copied * 0x200));
-		if (opret < 0)
-			goto frlend;
-		if (calc_dig) {
-			opret = -1;
-			LOG("sha256-checking the buf...\n");
-			if (ksceSha256Digest(fsp_buf, 0x1000000, sha256_c) < 0)
-				goto frlend;
-			if (memcmp(sha256_c, sha256_k, 0x20) != 0)
-				goto frlend;
-		}
-		opret = default_write(main_off + copied, fsp_buf, 0x8000);
-		if (opret < 0)
-			goto frlend;
-		copied = copied + 0x8000;
-	}
-	
-	if (copied < size && (size - copied) <= 0x8000) { // then copy the remaining data
-		LOG("starting write (small) 0x%X...\n", (size - copied));
-		opret = ksceIoPread(fd, fsp_buf, (size - copied) * 0x200, offset + (copied * 0x200));
-		if (opret < 0)
-			goto frlend;
-		if (calc_dig) {
-			opret = -1;
-			LOG("sha256-checking the buf...\n");
-			if (ksceSha256Digest(fsp_buf, 0x1000000, sha256_c) < 0)
-				goto frlend;
-			if (memcmp(sha256_c, sha256_k, 0x20) != 0)
-				goto frlend;
-		}
-		opret = default_write(main_off + copied, fsp_buf, (size - copied));
-		if (opret < 0)
-			goto frlend;
-		copied = size;
-	}
-	
-	LOG("write done 0x%X=0x%X?\n", copied, size);
-	if (copied != size)
-		opret = -1;
-	else
-		opret = 0;
-frlend:
-	ksceIoClose(fd);
-perr:
-	LOG("exit call || 0x%X\n", opret);
-	EXIT_SYSCALL(state);
-	return opret;
-}
-
-// read [size] bytes from fwimage @ [offset] to fsp buf, check 0x200 to match [crc32], g[unzip] the output
-int fwtool_read_fwimage(uint32_t offset, uint32_t size, uint32_t crc32, uint32_t unzip) {
+// read [size] bytes from fwimage @ [offset] to fsp buf, check 0x200 to match [exp_crc32], g[unzip] the output
+int fwtool_read_fwimage(uint32_t offset, uint32_t size, uint32_t exp_crc32, uint32_t unzip) {
 	if (size > 0x1000000 || size == 0 || offset == 0 || unzip > 0x1000000)
 		return -1;
 	int state = 0, opret = -1;
 	ENTER_SYSCALL(state);
-	LOG("fwtool_read_fwimage 0x%X 0x%X 0x%X 0x%X\n", offset, size, crc32, unzip);
+	LOG("fwtool_read_fwimage 0x%X 0x%X 0x%X 0x%X\n", offset, size, exp_crc32, unzip);
 	
 	memset(fsp_buf, 0, 0x1000000);
 	if (unzip > 0)
@@ -413,7 +298,7 @@ int fwtool_read_fwimage(uint32_t offset, uint32_t size, uint32_t crc32, uint32_t
 		goto rerr;
 	
 	LOG("crchecking...\n");
-	if (check_block_crc32((unzip > 0) ? gz_buf : fsp_buf, crc32) < 0)
+	if (cmp_crc32(exp_crc32, (unzip > 0) ? gz_buf : fsp_buf, 0x200) < 0)
 		goto rerr;
 	
 	LOG("ungzipping...\n");
@@ -549,7 +434,7 @@ merr:
 
 // write [size] bytes from fsp buf to sector 2
 int fwtool_flash_e2x(uint32_t size) {
-	if (size == 0 || size > 0x2E || (size % 0x200) != 0)
+	if (size == 0 || size > (0x2E * 0x200) || (size % 0x200) != 0)
 		return -1;
 	size = size / 0x200;
 	int state = 0, opret = -1;
@@ -593,16 +478,16 @@ int fwtool_talku(int cmd, int cmdbuf) {
 	
 	switch(cmd) {
 		case 0: // set fwimage path
-			opret = ksceKernelMemcpyUserToKernel(src_k, cmdbuf, 64);
+			opret = ksceKernelMemcpyUserToKernel(src_k, (uintptr_t)cmdbuf, 64);
 			fwimage = src_k;
 			break;
 		case 1: // copy x200 from fwtool mbr buf to user buf
 		case 2: // copy x400000 from fwtool bl buf to user buf
-			opret = (cmd == 1) ? ksceKernelMemcpyKernelToUser(cmdbuf, mbr, 0x200) : ksceKernelMemcpyKernelToUser(cmdbuf, bl_buf, 0x400000);
+			opret = (cmd == 1) ? ksceKernelMemcpyKernelToUser((uintptr_t)cmdbuf, mbr, 0x200) : ksceKernelMemcpyKernelToUser((uintptr_t)cmdbuf, bl_buf, 0x400000);
 			break;
 		case 3: // copy x1000000 from gz buf to user buf
 		case 4: // copy x1000000 from fsp buf to user buf
-			opret = ksceKernelMemcpyKernelToUser(cmdbuf, (cmd == 3) ? gz_buf : fsp_buf, 0x1000000);
+			opret = ksceKernelMemcpyKernelToUser((uintptr_t)cmdbuf, (cmd == 3) ? gz_buf : fsp_buf, 0x1000000);
 			break;
 		case 5: // file debug logs flag
 			enable_f_logging = !enable_f_logging;
@@ -631,13 +516,13 @@ int fwtool_talku(int cmd, int cmdbuf) {
 			break;
 		case 10: // mount custom blkpath as grw0
 			memset(cpart_k, 0, 64);
-			ksceKernelMemcpyUserToKernel(cpart_k, cmdbuf, 64);
+			ksceKernelMemcpyUserToKernel(cpart_k, (uintptr_t)cmdbuf, 64);
 			opret = cmount_part(cpart_k);
 			break;
 		case 11: // update inactive bl sha256 in SNVS
 			opret = siofix(update_snvs_sha256);
 			break;
-		case 12: // get enso install state (err/0/1)
+		case 12: // get enso install state (0/1)
 			opret = is_prenso;
 			break;
 		case 13: // skip bl personalize
@@ -647,8 +532,19 @@ int fwtool_talku(int cmd, int cmdbuf) {
 			opret = (*(uint32_t *)bl_buf == 0x32424c53) ? 0 : -1;
 			break;
 		case 14: // set fwrpoint path
-			opret = ksceKernelMemcpyUserToKernel(src_k, cmdbuf, 64);
+			opret = ksceKernelMemcpyUserToKernel(src_k, (uintptr_t)cmdbuf, 64);
 			fwrpoint = src_k;
+			break;
+		case 15: // copy x200 from fwtool real mbr buf to user buf
+			opret = ksceKernelMemcpyKernelToUser((uintptr_t)cmdbuf, real_mbr, 0x200);
+			break;
+		case 16: // get client-lock state
+			opret = (is_locked) ? -1 : 0;
+			is_locked = 1;
+			break;
+		case 17: // skip crc checks flag
+			skip_int_chk = !skip_int_chk;
+			opret = skip_int_chk;
 			break;
 		default:
 			break;
@@ -678,6 +574,7 @@ int module_start(SceSize argc, const void *args)
 		return SCE_KERNEL_START_FAILED;
 	
 	memset(mbr, 0, 0x200);
+	memset(real_mbr, 0, 0x200);
 	fwimage = "ux0:data/fwtool/fwimage.bin";
 	fwrpoint = "ux0:data/fwtool/fwrpoint.bin";
 	
@@ -685,11 +582,13 @@ int module_start(SceSize argc, const void *args)
 	fw = *(uint32_t *)(*(int *)(ksceKernelGetSysbase() + 0x6c) + 4);
 	cur_dev = ksceSblAimgrIsTest() ? 0 : (ksceSblAimgrIsTool() ? 1 : (ksceSblAimgrIsDEX() ? 2 : (ksceSblAimgrIsCEX() ? 3 : 4)));
 	emmc = ksceSdifGetSdContextPartValidateMmc(0);
-	is_prenso = get_enso_state();
-	if (is_prenso < 0)
+	if (emmc == 0 || module_get_offset(KERNEL_PID, ksceKernelSearchModuleByName("SceSdif"), 0, 0x3e7d, (uintptr_t *)&read_real_mmc) < 0 || read_real_mmc == NULL)
 		return SCE_KERNEL_START_FAILED;
+	if (ksceSdifReadSectorMmc(emmc, 0, mbr, 1) < 0 || ksceSdifReadSectorMmc(emmc, 2, fsp_buf, 0x2E) < 0 || read_real_mmc(emmc, 0, real_mbr, 1) < 0)
+		return SCE_KERNEL_START_FAILED;
+	is_prenso = get_enso_state();
 	LOG("firmware: 0x%08X\ndevice: %s\nenso: %s\nemmctx: 0x%X\n", fw, target_dev[cur_dev], (is_prenso) ? "YES" : "NO", emmc);
-	if (fw < 0x03600000 || fw > 0x03730011 || emmc == 0 || ksceSdifReadSectorMmc(emmc, 0, mbr, 1) < 0)
+	if (fw < 0x03600000 || fw > 0x03730011)
 		return SCE_KERNEL_START_FAILED;
 	
 	LOG("init done\n\n---------WAITING_4_U_CMDN---------\n\n");

@@ -4,8 +4,16 @@
 	<livearea-background>
 		<image>bg.png</image>
 	</livearea-background>
-	
+
 	<gate>
 		<startup-image>startup.png</startup-image>
 	</gate>
+
+	<frame id="frame3">
+		<liveitem>
+			<text valign="bottom" align="left" text-align="left" word-wrap="off" ellipsis="on">
+				<str size="24" color="#ffffff" shadow="on">build v1.0-internal-safe</str>
+			</text>
+		</liveitem>
+	</frame>
 </livearea>
