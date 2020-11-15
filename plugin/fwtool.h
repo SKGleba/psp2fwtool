@@ -1,7 +1,7 @@
 #define LOG_LOC "ux0:data/fwtool/log.txt"
 #define FWTOOL_VERSION_STR "FWTOOL v1.0 by SKGleba"
 
-#define ARRAYSIZE(x) ((sizeof(x)/sizeof(0[x])) / ((size_t)(!(sizeof(x) % sizeof(0[x])))))
+#define ARRAYSIZE(x) ((sizeof(x) / sizeof(0 [x])) / ((size_t)(!(sizeof(x) % sizeof(0 [x])))))
 
 static char *pcode_str[] = {
 	"empty",
@@ -21,7 +21,7 @@ static char *pcode_str[] = {
 	"pd0",
 	"unused" // actual valid partition
 };
-	
+
 static char *target_dev[] = {
 	"TEST",
 	"DEVTOOL",
@@ -29,10 +29,10 @@ static char *target_dev[] = {
 	"CEX",
 	"QA",
 	"ALL",
-	"NOCHK"
-};
+	"NOCHK"};
 
-typedef struct{
+typedef struct
+{
 	uint32_t magic;
 	uint32_t size;
 	char target[0x10];
@@ -40,7 +40,8 @@ typedef struct{
 	uint32_t prev_crc;
 } __attribute__((packed)) emmcimg_super;
 
-typedef struct {
+typedef struct
+{
 	uint16_t magic;
 	uint8_t part_id;
 	uint8_t type;
@@ -51,7 +52,8 @@ typedef struct {
 	uint32_t crc32;
 } __attribute__((packed)) pkg_fs_etr;
 
-typedef struct{
+typedef struct
+{
 	uint32_t magic;
 	uint8_t version;
 	uint8_t target;
@@ -59,7 +61,8 @@ typedef struct{
 	uint8_t bl_fs_no;
 } __attribute__((packed)) pkg_toc;
 
-typedef struct {
+typedef struct
+{
 	uint32_t off;
 	uint32_t sz;
 	uint8_t code;
@@ -69,7 +72,8 @@ typedef struct {
 	uint16_t unk;
 } __attribute__((packed)) partition_t;
 
-typedef struct {
+typedef struct
+{
 	char magic[0x20];
 	uint32_t version;
 	uint32_t device_size;
@@ -80,7 +84,8 @@ typedef struct {
 	uint16_t sig;
 } __attribute__((packed)) master_block_t;
 
-typedef struct {
+typedef struct
+{
 	const char *dev;
 	const char *dev2;
 	const char *blkdev;
@@ -88,7 +93,8 @@ typedef struct {
 	int id;
 } SceIoDevice;
 
-typedef struct {
+typedef struct
+{
 	int id;
 	const char *dev_unix;
 	int unk;
@@ -104,4 +110,3 @@ typedef struct {
 	int unk6;
 	int unk7;
 } SceIoMountPoint;
-
