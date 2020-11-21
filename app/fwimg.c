@@ -1,15 +1,20 @@
+/* THIS FILE IS A PART OF PSP2FWTOOL
+ *
+ * Copyright (C) 2019-2020 skgleba
+ *
+ * This software may be modified and distributed under the terms
+ * of the MIT license.  See the LICENSE file for details.
+ */
+
 #define CHUNK_SIZE 64 * 1024
 #define hasEndSlash(path) (path[strlen(path) - 1] == '/')
 
-void fwimg_get_pkey(int mode)
-{
+void fwimg_get_pkey(int mode) {
 	SceCtrlData pad;
 	COLORPRINTF(COLOR_YELLOW, "Press %s.\n", (mode) ? "\n [START] to flash the fwimage\n [CIRCLE] to exit the installer\n" : "CIRCLE to reboot");
-	while (1)
-	{
+	while (1) {
 		sceCtrlPeekBufferPositive(0, &pad, 1);
-		if (pad.buttons & SCE_CTRL_CIRCLE)
-		{
+		if (pad.buttons & SCE_CTRL_CIRCLE) {
 			if (mode)
 				sceKernelExitProcess(0);
 			else
@@ -21,12 +26,11 @@ void fwimg_get_pkey(int mode)
 	}
 }
 
-int fcp(const char *src, const char *dst)
-{
+int fcp(const char* src, const char* dst) {
 	DBG("Copying %s -> %s (file)... ", src, dst);
 	int res;
 	SceUID fdsrc = -1, fddst = -1;
-	void *buf = NULL;
+	void* buf = NULL;
 
 	res = fdsrc = sceIoOpen(src, SCE_O_RDONLY, 0);
 	if (res < 0)
@@ -37,14 +41,12 @@ int fcp(const char *src, const char *dst)
 		goto err;
 
 	buf = memalign(4096, CHUNK_SIZE);
-	if (!buf)
-	{
+	if (!buf) {
 		res = -1;
 		goto err;
 	}
 
-	do
-	{
+	do {
 		res = sceIoRead(fdsrc, buf, CHUNK_SIZE);
 		if (res > 0)
 			res = sceIoWrite(fddst, buf, res);
@@ -61,11 +63,9 @@ err:
 	return res;
 }
 
-int copyDir(const char *src_path, const char *dst_path)
-{
+int copyDir(const char* src_path, const char* dst_path) {
 	SceUID dfd = sceIoDopen(src_path);
-	if (dfd >= 0)
-	{
+	if (dfd >= 0) {
 		DBG("Copying %s -> %s (dir)\n", src_path, dst_path);
 		SceIoStat stat;
 		sceClibMemset(&stat, 0, sizeof(SceIoStat));
@@ -77,36 +77,30 @@ int copyDir(const char *src_path, const char *dst_path)
 
 		int res = 0;
 
-		do
-		{
+		do {
 			SceIoDirent dir;
 			sceClibMemset(&dir, 0, sizeof(SceIoDirent));
 
 			res = sceIoDread(dfd, &dir);
-			if (res > 0)
-			{
-				char *new_src_path = malloc(strlen(src_path) + strlen(dir.d_name) + 2);
-				snprintf(new_src_path, 1024, "%s%s%s", src_path, hasEndSlash(src_path) ? "" : "/", dir.d_name);
+			if (res > 0) {
+				char* new_src_path = malloc(strlen(src_path) + strlen(dir.d_name) + 2);
+				sceClibSnprintf(new_src_path, 1024, "%s%s%s", src_path, hasEndSlash(src_path) ? "" : "/", dir.d_name);
 
-				char *new_dst_path = malloc(strlen(dst_path) + strlen(dir.d_name) + 2);
-				snprintf(new_dst_path, 1024, "%s%s%s", dst_path, hasEndSlash(dst_path) ? "" : "/", dir.d_name);
+				char* new_dst_path = malloc(strlen(dst_path) + strlen(dir.d_name) + 2);
+				sceClibSnprintf(new_dst_path, 1024, "%s%s%s", dst_path, hasEndSlash(dst_path) ? "" : "/", dir.d_name);
 
 				int ret = 0;
 
-				if (SCE_S_ISDIR(dir.d_stat.st_mode))
-				{
+				if (SCE_S_ISDIR(dir.d_stat.st_mode)) {
 					ret = copyDir(new_src_path, new_dst_path);
-				}
-				else
-				{
+				} else {
 					ret = fcp(new_src_path, new_dst_path);
 				}
 
 				free(new_dst_path);
 				free(new_src_path);
 
-				if (ret < 0)
-				{
+				if (ret < 0) {
 					sceIoDclose(dfd);
 					return ret;
 				}
@@ -114,25 +108,29 @@ int copyDir(const char *src_path, const char *dst_path)
 		} while (res > 0);
 
 		sceIoDclose(dfd);
-	}
-	else
+	} else
 		return fcp(src_path, dst_path);
 
 	return 1;
 }
 
-int update_default(const char *fwimage)
-{
+// Install [fwimage] (ux0:data/fwtool/fwimage.bin if NULL)
+int update_default(const char* fwimage) {
+	/*
+		Stage 1 - basic image checks
+		- Errors if no file/no FS_PARTs
+		- Errors if bad magic/version
+		- Errors if bad target
+		- Asks the user one last time to confirm flash
+	*/
 	int opret = 1;
-
 	psvDebugScreenClear(COLOR_BLACK);
 	COLORPRINTF(COLOR_RED, FWTOOL_VERSION_STR);
 	COLORPRINTF(COLOR_CYAN, "\n---------STAGE 1: FS_INIT---------\n\n");
 	main_check_stop(opret);
 	if (fwimage == NULL)
 		fwimage = "ux0:data/fwtool/fwimage.bin";
-	else
-	{
+	else {
 		sceClibStrncpy(src_u, fwimage, 63);
 		if (fwtool_talku(0, (int)src_u) < 0)
 			goto err;
@@ -142,7 +140,7 @@ int update_default(const char *fwimage)
 	SceUID fd = sceIoOpen(fwimage, SCE_O_RDONLY, 0);
 	if (fd < 0)
 		goto err;
-	int ret = sceIoRead(fd, (void *)&fwimg_toc, sizeof(pkg_toc));
+	int ret = sceIoRead(fd, (void*)&fwimg_toc, sizeof(pkg_toc));
 	sceIoClose(fd);
 	printf("Image magic: 0x%X exp 0xcafebabe\nImage version: %d\n", fwimg_toc.magic, fwimg_toc.version);
 	if (ret < 0 || fwimg_toc.magic != 0xcafebabe || fwimg_toc.version != 2)
@@ -160,8 +158,11 @@ int update_default(const char *fwimage)
 
 	int verif_bl = 0;
 	pkg_fs_etr fs_entry;
-	if (target < 6)
-	{
+	if (target < 6) {
+		/*
+			Stage 2 - patched syscon_init()
+			This sets system firmware version to 0xDEADBEEF which makes stage 2 loader use its hardcoded ver
+		*/
 		opret = 2;
 		psvDebugScreenClear(COLOR_BLACK);
 		COLORPRINTF(COLOR_RED, FWTOOL_VERSION_STR);
@@ -171,6 +172,13 @@ int update_default(const char *fwimage)
 		if (fwtool_unlink() < 0)
 			goto err;
 
+		/*
+			Stage 3 - Prepare SLSK
+			- Puts SLSK in separate memblock and personalizes them
+			- Compares the ARM KBL fw with console minfw to avoid bricks
+			- Updates the SLSK sha256 in SNVS for the inactive bank
+			> TODO: check bl2 fw instead to allow ARM KBL mods
+		*/
 		opret = 3;
 		psvDebugScreenClear(COLOR_BLACK);
 		COLORPRINTF(COLOR_RED, FWTOOL_VERSION_STR);
@@ -190,27 +198,32 @@ int update_default(const char *fwimage)
 			fs_entry.crc32, skip_int_chk);
 		if (ret < 0 || fs_entry.magic != 0xAA12)
 			goto err;
-		if (fs_entry.type == 1)
-		{
+		if (fs_entry.type == 1) {
 			printf("Reading the new bootloaders...\n");
 			if (fwtool_read_fwimage(fs_entry.pkg_off, fs_entry.pkg_sz, fs_entry.crc32, (fs_entry.pkg_sz == fs_entry.dst_sz) ? 0 : fs_entry.dst_sz) < 0)
 				goto err;
 			printf("Personalizing the new bootloaders...\n");
 			if (fwtool_personalize_bl(1) < 0)
 				goto err;
+			printf("Checking the minfwv vs ARM KBL fwv...\n");
+			if (!skip_int_chk && fwtool_talku(18, 0) < 0)
+				goto err;
 			verif_bl = 1;
 			printf("Updating the SHA256 in SNVS...\n");
 			if (fwtool_talku(11, 0) < 0)
 				goto err;
-		}
-		else
-		{
+		} else {
 			printf("Could not find any bootloader entry!\nContinue anyways?\n");
 			sceKernelDelayThread(1000 * 1000);
 			fwimg_get_pkey(1);
 		}
 	}
 
+	/*
+		Stage 4 - flash
+		- Flashes all the FS_PARTs to EMMC
+		- Sets update_mbr flags
+	*/
 	opret = 4;
 	psvDebugScreenClear(COLOR_BLACK);
 	COLORPRINTF(COLOR_RED, FWTOOL_VERSION_STR);
@@ -218,8 +231,7 @@ int update_default(const char *fwimage)
 	uint8_t ecount = 0;
 	int swap_os = 0, swap_bl = 0, use_e2x = 0;
 	uint32_t off = sizeof(pkg_toc);
-	while (ecount < fwimg_toc.fs_count)
-	{
+	while (ecount < fwimg_toc.fs_count) {
 		DBG("getting entry %d (0x%X)\n", ecount, off);
 		main_check_stop(opret);
 		fd = sceIoOpen(fwimage, SCE_O_RDONLY, 0);
@@ -240,16 +252,14 @@ int update_default(const char *fwimage)
 			goto err;
 		ret = -1;
 		printf("W @ 0x%X)... ", fs_entry.dst_off);
-		if (fs_entry.type == 0)
+		if (fs_entry.type == 0) // default fs
 			ret = fwtool_write_partition(fs_entry.dst_off, fs_entry.dst_sz, fs_entry.part_id);
-		else if (fs_entry.type > 0 && target == 6)
+		else if (fs_entry.type > 0 && target == 6) // skip if the "safe" target
 			ret = 0;
-		else if (fs_entry.type == 1 && fs_entry.dst_off == 0 && verif_bl)
-		{
+		else if (fs_entry.type == 1 && fs_entry.dst_off == 0 && verif_bl) { // slsk
 			if (fwtool_talku(7, 0))
 				ret = fwtool_write_partition(0, fs_entry.dst_sz, 2);
-		}
-		else if (fs_entry.type == 2 && fs_entry.dst_off == 0x400)
+		} else if (fs_entry.type == 2 && fs_entry.dst_off == 0x400) // e2x
 			ret = fwtool_flash_e2x(fs_entry.dst_sz);
 		if (ret < 0)
 			goto err;
@@ -264,8 +274,11 @@ int update_default(const char *fwimage)
 		off -= -sizeof(pkg_fs_etr);
 	}
 
-	if (target < 6)
-	{
+	if (target < 6) {
+		/*
+			Stage 5 - update the Master Boot Record
+			- Updates the MBR with new offsets
+		*/
 		opret = 5;
 		psvDebugScreenClear(COLOR_BLACK);
 		COLORPRINTF(COLOR_RED, FWTOOL_VERSION_STR);
@@ -276,6 +289,11 @@ int update_default(const char *fwimage)
 			goto err;
 	}
 
+	/*
+		Stage 6 - post-update patches
+		- Removes id.dat and tai config.txt from ux0
+		- Copies contents of *-patch dirs to * partitions
+	*/
 	opret = 0;
 	psvDebugScreenClear(COLOR_BLACK);
 	COLORPRINTF(COLOR_RED, FWTOOL_VERSION_STR);
@@ -303,14 +321,12 @@ err:
 	return opret;
 }
 
-int update_proxy(void)
-{
+int update_proxy(void) {
 	psvDebugScreenClear(COLOR_BLACK);
 	printf("FWTOOL::FLASHTOOL started\n");
 
 	int ret = update_default(NULL);
-	if (ret == 0)
-	{
+	if (ret == 0) {
 		COLORPRINTF(COLOR_CYAN, "\nALL DONE. ");
 		fwimg_get_pkey(0);
 		sceKernelDelayThread(1 * 1000 * 1000);

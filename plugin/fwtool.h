@@ -3,7 +3,7 @@
 
 #define ARRAYSIZE(x) ((sizeof(x) / sizeof(0 [x])) / ((size_t)(!(sizeof(x) % sizeof(0 [x])))))
 
-static char *pcode_str[] = {
+static char* pcode_str[] = {
 	"empty",
 	"idstorage",
 	"slb2",
@@ -22,17 +22,16 @@ static char *pcode_str[] = {
 	"unused" // actual valid partition
 };
 
-static char *target_dev[] = {
+static char* target_dev[] = {
 	"TEST",
 	"DEVTOOL",
 	"DEX",
 	"CEX",
 	"QA",
 	"ALL",
-	"NOCHK"};
+	"NOCHK" };
 
-typedef struct
-{
+typedef struct {
 	uint32_t magic;
 	uint32_t size;
 	char target[0x10];
@@ -40,8 +39,7 @@ typedef struct
 	uint32_t prev_crc;
 } __attribute__((packed)) emmcimg_super;
 
-typedef struct
-{
+typedef struct {
 	uint16_t magic;
 	uint8_t part_id;
 	uint8_t type;
@@ -52,8 +50,7 @@ typedef struct
 	uint32_t crc32;
 } __attribute__((packed)) pkg_fs_etr;
 
-typedef struct
-{
+typedef struct {
 	uint32_t magic;
 	uint8_t version;
 	uint8_t target;
@@ -61,8 +58,7 @@ typedef struct
 	uint8_t bl_fs_no;
 } __attribute__((packed)) pkg_toc;
 
-typedef struct
-{
+typedef struct {
 	uint32_t off;
 	uint32_t sz;
 	uint8_t code;
@@ -72,8 +68,7 @@ typedef struct
 	uint16_t unk;
 } __attribute__((packed)) partition_t;
 
-typedef struct
-{
+typedef struct {
 	char magic[0x20];
 	uint32_t version;
 	uint32_t device_size;
@@ -84,27 +79,25 @@ typedef struct
 	uint16_t sig;
 } __attribute__((packed)) master_block_t;
 
-typedef struct
-{
-	const char *dev;
-	const char *dev2;
-	const char *blkdev;
-	const char *blkdev2;
+typedef struct {
+	const char* dev;
+	const char* dev2;
+	const char* blkdev;
+	const char* blkdev2;
 	int id;
 } SceIoDevice;
 
-typedef struct
-{
+typedef struct {
 	int id;
-	const char *dev_unix;
+	const char* dev_unix;
 	int unk;
 	int dev_major;
 	int dev_minor;
-	const char *dev_filesystem;
+	const char* dev_filesystem;
 	int unk2;
-	SceIoDevice *dev;
+	SceIoDevice* dev;
 	int unk3;
-	SceIoDevice *dev2;
+	SceIoDevice* dev2;
 	int unk4;
 	int unk5;
 	int unk6;

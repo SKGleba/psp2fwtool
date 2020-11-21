@@ -1,12 +1,17 @@
-void rpoint_get_pkey(int mode)
-{
+/* THIS FILE IS A PART OF PSP2FWTOOL
+ *
+ * Copyright (C) 2019-2020 skgleba
+ *
+ * This software may be modified and distributed under the terms
+ * of the MIT license.  See the LICENSE file for details.
+ */
+
+void rpoint_get_pkey(int mode) {
 	SceCtrlData pad;
 	COLORPRINTF(COLOR_YELLOW, "Press %s.\n", (mode) ? "\n [START] to flash the EMMC\n [CIRCLE] to exit the installer\n" : "CIRCLE to reboot");
-	while (1)
-	{
+	while (1) {
 		sceCtrlPeekBufferPositive(0, &pad, 1);
-		if (pad.buttons & SCE_CTRL_CIRCLE)
-		{
+		if (pad.buttons & SCE_CTRL_CIRCLE) {
 			if (mode)
 				sceKernelExitProcess(0);
 			else
@@ -18,12 +23,10 @@ void rpoint_get_pkey(int mode)
 	}
 }
 
-int rpoint_get_dsel(void)
-{
+int rpoint_get_dsel(void) {
 	SceCtrlData pad;
 	COLORPRINTF(COLOR_YELLOW, "Press\n [START] to dump the whole EMMC\n [SQUARE] to dump without user storages\n [CIRCLE] to exit");
-	while (1)
-	{
+	while (1) {
 		sceCtrlPeekBufferPositive(0, &pad, 1);
 		if (pad.buttons & SCE_CTRL_CIRCLE)
 			sceKernelExitProcess(0);
@@ -35,8 +38,7 @@ int rpoint_get_dsel(void)
 	}
 }
 
-int create_full(const char *fwrpoint)
-{
+int create_full(const char* fwrpoint) {
 	int opret = 1;
 	psvDebugScreenClear(COLOR_BLACK);
 	COLORPRINTF(COLOR_RED, FWTOOL_VERSION_STR);
@@ -44,8 +46,7 @@ int create_full(const char *fwrpoint)
 	main_check_stop(opret);
 	if (fwrpoint == NULL)
 		fwrpoint = "ux0:data/fwtool/fwrpoint.bin";
-	else
-	{
+	else {
 		sceClibStrncpy(src_u, fwrpoint, 63);
 		if (fwtool_talku(14, (int)src_u) < 0)
 			return opret;
@@ -87,8 +88,7 @@ int create_full(const char *fwrpoint)
 	return 0;
 }
 
-int restore_full(const char *fwrpoint)
-{
+int restore_full(const char* fwrpoint) {
 	int opret = 1;
 	psvDebugScreenClear(COLOR_BLACK);
 	COLORPRINTF(COLOR_RED, FWTOOL_VERSION_STR);
@@ -96,8 +96,7 @@ int restore_full(const char *fwrpoint)
 	main_check_stop(opret);
 	if (fwrpoint == NULL)
 		fwrpoint = "ux0:data/fwtool/fwrpoint.bin";
-	else
-	{
+	else {
 		sceClibStrncpy(src_u, fwrpoint, 63);
 		if (fwtool_talku(14, (int)src_u) < 0)
 			return opret;
@@ -154,15 +153,13 @@ int restore_full(const char *fwrpoint)
 	return 0;
 }
 
-int create_proxy(void)
-{
+int create_proxy(void) {
 	psvDebugScreenClear(COLOR_BLACK);
 	printf("FWTOOL::CRTOOL started\n");
 
 	int ret = create_full(NULL);
 
-	if (ret == 0)
-	{
+	if (ret == 0) {
 		COLORPRINTF(COLOR_CYAN, "\nALL DONE. ");
 		rpoint_get_pkey(0);
 		sceKernelDelayThread(1 * 1000 * 1000);
@@ -176,15 +173,13 @@ int create_proxy(void)
 	return -1;
 }
 
-int restore_proxy(void)
-{
+int restore_proxy(void) {
 	psvDebugScreenClear(COLOR_BLACK);
 	printf("FWTOOL::RITOOL started\n");
 
 	int ret = restore_full(NULL);
 
-	if (ret == 0)
-	{
+	if (ret == 0) {
 		COLORPRINTF(COLOR_CYAN, "\nALL DONE. ");
 		rpoint_get_pkey(0);
 		sceKernelDelayThread(1 * 1000 * 1000);

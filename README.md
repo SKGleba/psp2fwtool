@@ -12,8 +12,8 @@ Firmware manager for Playstation Vita/TV
  - enso should be called 'fat.bin' or 'e2x.bin' depending on the enso version you are using.
 3. Run '. fwtool [path] -target [type]', the tool will create a firmware image in [path].
  - [type] is device target id in decimal:
-  - 0-5: internal, devtool, testkit, retail, QA, all
-  - 6: all targets but without SNVS/MBR update (used for "soft" images).
+   - 0-5: internal, devtool, testkit, retail, QA, all
+   - 6: all targets but without SNVS/MBR update (used for "soft" images).
 4. Run '. fwtool [path] -info' and make sure that everything is as expected.
 
 ### Installing the firmware image
@@ -31,7 +31,14 @@ Firmware manager for Playstation Vita/TV
  - The image can be restored at any time and on any supported firmware.
  - The image size is around 4GB for full and 1GB for partial (without ur0/ux0).
  - To create/restore it use the fwtool app:
-  - 'Create a EMMC image' will create a restore point in 'ux0:data/fwtool/fwrpoint.bin'
-  - 'Restore the EMMC image' will flash the restore point in 'ux0:data/fwtool/fwrpoint.bin'
+   - 'Create a EMMC image' will create a restore point in 'ux0:data/fwtool/fwrpoint.bin'
+   - 'Restore the EMMC image' will flash the restore point from 'ux0:data/fwtool/fwrpoint.bin'
 
+## Notes
+ - This tool was written for firmwares 3.60-3.73, all device types.
+ - A list of known prebuilt firmware images can be found in nfo.txt
+ - This tool currently does not support component updates
+   - It is recommended to not go below firmware 2.10 using fwtool.
+ - fwtool has been extensively tested over the past two years, it should not cause any bricks
+   - It is recommended to install images that include enso_ex v4+ for extra safety.
 

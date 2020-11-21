@@ -1,3 +1,11 @@
+/* THIS FILE IS A PART OF PSP2FWTOOL
+ *
+ * Copyright (C) 2019-2020 skgleba
+ *
+ * This software may be modified and distributed under the terms
+ * of the MIT license.  See the LICENSE file for details.
+ */
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <taihen.h>
@@ -38,8 +46,7 @@ extern int fwtool_rw_emmcimg(int dump);
 static int redir_writes = 0, file_logging = 0, skip_int_chk = 0;
 static char src_u[64];
 
-void main_check_stop(uint32_t code)
-{
+void main_check_stop(uint32_t code) {
 	SceCtrlData pad, pad1;
 	sceCtrlPeekBufferPositive(0, &pad1, 1);
 	if (!(pad1.buttons & SCE_CTRL_TRIANGLE))
@@ -47,15 +54,13 @@ void main_check_stop(uint32_t code)
 	COLORPRINTF(COLOR_RED, "REQ_STOP | CODE: 0x%X\n", code);
 	COLORPRINTF(COLOR_YELLOW, "Press %s.\n", "\n CROSS to reset\n SQUARE to continue\n CIRCLE to exit");
 	sceKernelDelayThread(1000 * 1000);
-	while (1)
-	{
+	while (1) {
 		sceCtrlPeekBufferPositive(0, &pad, 1);
 		if (pad.buttons & SCE_CTRL_CIRCLE)
 			break;
 		else if (pad.buttons & SCE_CTRL_SQUARE)
 			return;
-		else if (pad.buttons & SCE_CTRL_CROSS)
-		{
+		else if (pad.buttons & SCE_CTRL_CROSS) {
 			scePowerRequestColdReset();
 			break;
 		}
@@ -68,22 +73,19 @@ void main_check_stop(uint32_t code)
 #include "fwimg.c"
 #include "rpoint.c"
 
-const char main_opt_str[4][32] = {" -> Flash a firmware image", " -> Create a EMMC image", " -> Restore the EMMC image", " -> Exit"};
-const char settings_opt_str[4][32] = {" -> Toggle file logging", " -> Toggle wredirect to GC-SD", " -> Toggle integrity checks", " -> Back"};
+const char main_opt_str[4][32] = { " -> Flash a firmware image", " -> Create a EMMC image", " -> Restore the EMMC image", " -> Exit" };
+const char settings_opt_str[4][32] = { " -> Toggle file logging", " -> Toggle wredirect to GC-SD", " -> Toggle integrity checks", " -> Back" };
 int optct = 4;
 
-void erroff()
-{
+void erroff() {
 	COLORPRINTF(COLOR_RED, "ERR_REQ_OFF\n");
 	SceCtrlData pad;
 	COLORPRINTF(COLOR_YELLOW, "Press %s.\n", "CROSS to reset or CIRCLE to exit");
-	while (1)
-	{
+	while (1) {
 		sceCtrlPeekBufferPositive(0, &pad, 1);
 		if (pad.buttons & SCE_CTRL_CIRCLE)
 			break;
-		if (pad.buttons & SCE_CTRL_CROSS)
-		{
+		else if (pad.buttons & SCE_CTRL_CROSS) {
 			scePowerRequestColdReset();
 			break;
 		}
@@ -92,13 +94,11 @@ void erroff()
 	sceKernelExitProcess(0);
 }
 
-void agreement()
-{
+void agreement() {
 	printf("\nThis software will make PERMANENT modifications to your Vita\nIf anything goes wrong, there is NO RECOVERY.\n\n");
 	COLORPRINTF(COLOR_PURPLE, "\n\n -> I understood, continue.\n\n");
 	SceCtrlData pad;
-	while (1)
-	{
+	while (1) {
 		sceCtrlPeekBufferPositive(0, &pad, 1);
 		if (pad.buttons & SCE_CTRL_CIRCLE)
 			break;
@@ -109,12 +109,10 @@ void agreement()
 	sceKernelExitProcess(0);
 }
 
-void main_menu(int sel)
-{
+void main_menu(int sel) {
 	psvDebugScreenClear(COLOR_BLACK);
 	COLORPRINTF(COLOR_CYAN, FWTOOL_VERSION_STR "\n");
-	for (int i = 0; i < optct; i++)
-	{
+	for (int i = 0; i < optct; i++) {
 		if (sel == i)
 			psvDebugScreenSetFgColor(COLOR_PURPLE);
 		printf("%s\n", main_opt_str[i]);
@@ -123,13 +121,11 @@ void main_menu(int sel)
 	psvDebugScreenSetFgColor(COLOR_WHITE);
 }
 
-void settings_menu(int sel)
-{
+void settings_menu(int sel) {
 	psvDebugScreenClear(COLOR_BLACK);
 	COLORPRINTF(COLOR_CYAN, FWTOOL_VERSION_STR "\n");
 	COLORPRINTF(COLOR_YELLOW, "\nDEV SETTINGS\n");
-	for (int i = 0; i < optct; i++)
-	{
+	for (int i = 0; i < optct; i++) {
 		if (sel == i)
 			psvDebugScreenSetFgColor(COLOR_PURPLE);
 		printf("%s\n", settings_opt_str[i]);
@@ -138,44 +134,31 @@ void settings_menu(int sel)
 	psvDebugScreenSetFgColor(COLOR_WHITE);
 }
 
-int settings(void)
-{
+int settings(void) {
 	int sel = 0;
 	SceCtrlData pad;
 	settings_menu(0);
-	while (1)
-	{
+	while (1) {
 		sceCtrlPeekBufferPositive(0, &pad, 1);
-		if (pad.buttons == SCE_CTRL_CROSS)
-		{
-			if (sel == 0)
-			{
+		if (pad.buttons == SCE_CTRL_CROSS) {
+			if (sel == 0) {
 				file_logging = fwtool_talku(5, 0);
 				COLORPRINTF(COLOR_YELLOW, "FILE LOGGING: %s\n", (file_logging) ? "ENABLED" : "DISABLED");
-			}
-			else if (sel == 1)
-			{
+			} else if (sel == 1) {
 				redir_writes = fwtool_talku(9, 0);
 				COLORPRINTF(COLOR_YELLOW, "REDIR WRITES: %s\n", (redir_writes) ? "ENABLED" : "DISABLED");
-			}
-			else if (sel == 2)
-			{
+			} else if (sel == 2) {
 				skip_int_chk = fwtool_talku(17, 0);
 				COLORPRINTF(COLOR_YELLOW, "SKIP INT CHK: %s\n", (skip_int_chk) ? "ENABLED" : "DISABLED");
-			}
-			else if (sel > 2)
+			} else if (sel > 2)
 				return 69;
 			sceKernelDelayThread(0.3 * 1000 * 1000);
-		}
-		else if (pad.buttons == SCE_CTRL_UP)
-		{
+		} else if (pad.buttons == SCE_CTRL_UP) {
 			if (sel != 0)
 				sel--;
 			settings_menu(sel);
 			sceKernelDelayThread(0.3 * 1000 * 1000);
-		}
-		else if (pad.buttons == SCE_CTRL_DOWN)
-		{
+		} else if (pad.buttons == SCE_CTRL_DOWN) {
 			if (sel + 1 < optct)
 				sel++;
 			settings_menu(sel);
@@ -185,8 +168,7 @@ int settings(void)
 	return -1;
 }
 
-int main(int argc, char *argv[])
-{
+int main(int argc, char* argv[]) {
 	psvDebugScreenInit();
 	psvDebugScreenClear(COLOR_BLACK);
 	COLORPRINTF(COLOR_CYAN, FWTOOL_VERSION_STR "\n");
@@ -199,15 +181,12 @@ int main(int argc, char *argv[])
 	argg.argp = NULL;
 	argg.flags = 0;
 	// load fwtool kernel
-	if (taiLoadStartKernelModuleForUser("ux0:app/SKGFWT00L/fwtool.skprx", &argg) < 0)
-	{
-		if (fwtool_talku(16, 0) < 0)
-		{
+	if (taiLoadStartKernelModuleForUser("ux0:app/SKGFWT00L/fwtool.skprx", &argg) < 0) {
+		if (fwtool_talku(16, 0) < 0) {
 			printf("get_bind_status failed, the kernel module either failed to load or was locked by another process\n");
 			erroff();
 		}
-	}
-	else
+	} else
 		sceAppMgrLoadExec("app0:eboot.bin", NULL, NULL);
 
 	psvDebugScreenClear(COLOR_BLACK);
@@ -219,11 +198,9 @@ int main(int argc, char *argv[])
 rloop:
 	main_menu(0);
 	sceKernelDelayThread(1 * 1000 * 1000);
-	while (1)
-	{
+	while (1) {
 		sceCtrlPeekBufferPositive(0, &pad, 1);
-		if (pad.buttons == SCE_CTRL_CROSS)
-		{
+		if (pad.buttons == SCE_CTRL_CROSS) {
 			ret = -1;
 			if (sel == 0)
 				ret = update_proxy();
@@ -231,29 +208,22 @@ rloop:
 				ret = create_proxy();
 			else if (sel == 2)
 				ret = restore_proxy();
-			else if (sel > 2)
-			{
+			else if (sel > 2) {
 				sceKernelExitProcess(0);
 				return 0;
 			}
 			break;
-		}
-		else if (pad.buttons == SCE_CTRL_UP)
-		{
+		} else if (pad.buttons == SCE_CTRL_UP) {
 			if (sel != 0)
 				sel--;
 			main_menu(sel);
 			sceKernelDelayThread(0.3 * 1000 * 1000);
-		}
-		else if (pad.buttons == SCE_CTRL_DOWN)
-		{
+		} else if (pad.buttons == SCE_CTRL_DOWN) {
 			if (sel + 1 < optct)
 				sel++;
 			main_menu(sel);
 			sceKernelDelayThread(0.3 * 1000 * 1000);
-		}
-		else if (pad.buttons == SCE_CTRL_SELECT)
-		{
+		} else if (pad.buttons == SCE_CTRL_SELECT) {
 			ret = settings();
 			break;
 		}
