@@ -156,8 +156,11 @@ int restore_full(const char* fwrpoint) {
 int create_proxy(void) {
 	psvDebugScreenClear(COLOR_BLACK);
 	printf("FWTOOL::CRTOOL started\n");
-
-	int ret = create_full(NULL);
+	
+	int ret = fwtool_talku(19, 0);
+	DBG("set high perf mode: 0x%X\n", ret);
+	
+	ret = create_full(NULL);
 
 	if (ret == 0) {
 		COLORPRINTF(COLOR_CYAN, "\nALL DONE. ");
@@ -177,7 +180,10 @@ int restore_proxy(void) {
 	psvDebugScreenClear(COLOR_BLACK);
 	printf("FWTOOL::RITOOL started\n");
 
-	int ret = restore_full(NULL);
+	int ret = fwtool_talku(19, 0);
+	DBG("set high perf mode: 0x%X\n", ret);
+	
+	ret = restore_full(NULL);
 
 	if (ret == 0) {
 		COLORPRINTF(COLOR_CYAN, "\nALL DONE. ");

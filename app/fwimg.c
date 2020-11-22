@@ -154,6 +154,8 @@ int update_default(const char* fwimage) {
 	printf("FS_PART count: %d\n", fwimg_toc.fs_count);
 	if (fwimg_toc.fs_count == 0)
 		goto err;
+	ret = fwtool_talku(19, 0);
+	DBG("set high perf mode: 0x%X\n", ret);
 	fwimg_get_pkey(1);
 
 	int verif_bl = 0;
@@ -228,6 +230,8 @@ int update_default(const char* fwimage) {
 	psvDebugScreenClear(COLOR_BLACK);
 	COLORPRINTF(COLOR_RED, FWTOOL_VERSION_STR);
 	COLORPRINTF(COLOR_CYAN, "\n---------STAGE 4: FLASHFS---------\n\n");
+	ret = fwtool_talku(19, 1);
+	DBG("set boost mode: 0x%X\n", ret);
 	uint8_t ecount = 0;
 	int swap_os = 0, swap_bl = 0, use_e2x = 0;
 	uint32_t off = sizeof(pkg_toc);

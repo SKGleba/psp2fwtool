@@ -8,14 +8,14 @@
 
 #include "tai_compat.c"
 #include "fwtool.h"
-#include "logging.h"
 #include "crc32.c"
+#include "kutils.h"
 
 static SceIoDevice custom;
-static uint32_t fw = 0, minfw = 0;
 char* fwimage = NULL, * fwrpoint = NULL;
 void* fsp_buf = NULL, * gz_buf = NULL, * bl_buf = NULL;
 static char src_k[64], mbr[0x200], cpart_k[64], real_mbr[0x200];
+static uint32_t fw = 0, minfw = 0, * perv_clkm = NULL, * perv_clks = NULL;
 static int (*read_real_mmc)(int target, uint32_t off, void* dst, uint32_t sz) = NULL;
 static int emmc = 0, cur_dev = 0, use_new_bl = 0, redir_writes = 0, upmgr_ln = 0, is_prenso = 0, is_locked = 0, skip_int_chk = 0;
 
@@ -120,25 +120,10 @@ int find_part(master_block_t* master, uint8_t part_id, uint8_t active) {
 	return -1;
 }
 
-// fix for sdstor0 RW while system is running
-static int siofix(void* func) {
-	int ret = 0, res = 0, uid = 0;
-	ret = uid = ksceKernelCreateThread("siofix", func, 64, 0x10000, 0, 0, 0);
-	if ((ret < 0) || ((ret = ksceKernelStartThread(uid, 0, NULL)) < 0) || ((ret = ksceKernelWaitThreadEnd(uid, &res, NULL)) < 0)) {
-		ret = -1;
-		goto cleanup;
-	}
-	ret = res;
-cleanup:
-	if (uid > 0)
-		ksceKernelDeleteThread(uid);
-	return ret;
-}
-
 // get enso install status (0/1)
 int get_enso_state(void) {
 	char sbr_char[0x200];
-	ksceSdifReadSectorMmc(emmc, 1, &sbr_char, 1);
+	ksceSdifReadSectorMmc(emmc, 1, sbr_char, 1);
 	if (memcmp(sbr_char, "Sony Computer Entertainment Inc.", 0x20) == 0 && memcmp(mbr, sbr_char, 0x200) == 0 && memcmp(mbr, real_mbr, 0x200) != 0)
 		return 1;
 	return 0;
@@ -166,6 +151,23 @@ int cmount_part(const char* blkn) {
 	ksceIoUmount(0xA00, 0, 0, 0);
 	ksceIoUmount(0xA00, 1, 0, 0);
 	return ksceIoMount(0xA00, NULL, 0, 0, 0, 0);
+}
+
+// set high-perf mode
+int set_perf_mode(int boost) {
+	LOG("set_perf_mode(%d), cur: 0x%X H 0x%X\n", boost, *perv_clkm, *perv_clks);
+	if (boost) { // arm boost
+		*perv_clkm = 0xF;
+		*perv_clks = 0x0;
+	} else {
+		kscePowerSetArmClockFrequency(444); // arm hperf
+		kscePowerSetBusClockFrequency(222); // mem
+		/*
+		*(uint32_t*)(ksceSdifGetSdContextGlobal(0) + 0x2424) = *(uint32_t*)(ksceSdifGetSdContextGlobal(0) + 0x2420) + 0x810137f0;
+		return ksceSdifSetBusClockFrequency(*(uint32_t*)(ksceSdifGetSdContextGlobal(0) + 0x2414), 0); // emmc hspeed mode
+		*/
+	}
+	return *perv_clkm;
 }
 
 // update inactive slb2 bank sha256 in SNVS
@@ -205,7 +207,7 @@ int fwtool_rw_emmcimg(int dump) {
 	int state = 0, opret = -1;
 	ENTER_SYSCALL(state);
 	LOG("fwtool_rw_emmcimg %s (%d)\n", fwrpoint, dump);
-
+	set_perf_mode(1);
 	int fd = 0, crcn = 0;
 	uint32_t copied = 0, size = 0;
 	memset(fsp_buf, 0, 0x1000000);
@@ -546,10 +548,13 @@ int fwtool_talku(int cmd, int cmdbuf) {
 		opret = skip_int_chk;
 		break;
 	case 18: // check if ARM KBL FWV is not below minfw
-		if (*(uint32_t*)(bl_buf + *(uint32_t*)(bl_buf + 0xE0)) != 0x454353 || *(uint32_t*)(bl_buf + *(uint32_t*)(bl_buf + 0xE0) + 0x92) < minfw)
+		if (*(uint32_t*)(bl_buf + (*(uint32_t*)(bl_buf + 0xE0) * 0x200)) != 0x454353 || *(uint32_t*)(bl_buf + (*(uint32_t*)(bl_buf + 0xE0) * 0x200) + 0x92) < minfw)
 			opret = -1;
 		else
 			opret = 0;
+		break;
+	case 19: // change perf mode
+		opret = set_perf_mode(cmdbuf);
 		break;
 	default:
 		break;
@@ -583,8 +588,8 @@ int module_start(SceSize argc, const void* args) {
 	fwrpoint = "ux0:data/fwtool/fwrpoint.bin";
 
 	LOG("getting console info...\n");
-	fw = *(uint32_t*)(*(int*)(ksceKernelGetSysbase() + 0x6c) + 4);
-	minfw = *(uint32_t*)(*(int*)(ksceKernelGetSysbase() + 0x6c) + 8);
+	fw = *(uint32_t*)(*(int*)(ksceSysrootGetSysbase() + 0x6c) + 4);
+	minfw = *(uint32_t*)(*(int*)(ksceSysrootGetSysbase() + 0x6c) + 8);
 	cur_dev = ksceSblAimgrIsTest() ? 0 : (ksceSblAimgrIsTool() ? 1 : (ksceSblAimgrIsDEX() ? 2 : (ksceSblAimgrIsCEX() ? 3 : 4)));
 	emmc = ksceSdifGetSdContextPartValidateMmc(0);
 	if (emmc == 0 || module_get_offset(KERNEL_PID, ksceKernelSearchModuleByName("SceSdif"), 0, 0x3e7d, (uintptr_t*)&read_real_mmc) < 0 || read_real_mmc == NULL)
@@ -592,6 +597,8 @@ int module_start(SceSize argc, const void* args) {
 	if (ksceSdifReadSectorMmc(emmc, 0, mbr, 1) < 0 || ksceSdifReadSectorMmc(emmc, 2, fsp_buf, 0x2E) < 0 || read_real_mmc(emmc, 0, real_mbr, 1) < 0)
 		return SCE_KERNEL_START_FAILED;
 	is_prenso = get_enso_state();
+	perv_clkm = (uint32_t*)pa2va(0xE3103000);
+	perv_clks = (uint32_t*)pa2va(0xE3103004);
 	LOG("firmware: 0x%08X\nmin firmware: 0x%08X\ndevice: %s\nenso: %s\nemmctx: 0x%X\n", fw, minfw, target_dev[cur_dev], (is_prenso) ? "YES" : "NO", emmc);
 	if (fw < 0x03600000 || fw > 0x03730011)
 		return SCE_KERNEL_START_FAILED;
