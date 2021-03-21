@@ -1,6 +1,6 @@
 /* THIS FILE IS A PART OF PSP2FWTOOL
  *
- * Copyright (C) 2019-2020 skgleba
+ * Copyright (C) 2019-2021 skgleba
  *
  * This software may be modified and distributed under the terms
  * of the MIT license.  See the LICENSE file for details.
@@ -115,7 +115,7 @@ int copyDir(const char* src_path, const char* dst_path) {
 }
 
 // Install [fwimage] (ux0:data/fwtool/fwimage.bin if NULL)
-int update_default(const char* fwimage) {
+int update_default(const char* fwimage, int ud0_pathdir) {
 	/*
 		Stage 1 - basic image checks
 		- Errors if no file/no FS_PARTs
@@ -142,8 +142,8 @@ int update_default(const char* fwimage) {
 		goto err;
 	int ret = sceIoRead(fd, (void*)&fwimg_toc, sizeof(pkg_toc));
 	sceIoClose(fd);
-	printf("Image magic: 0x%X exp 0xcafebabe\nImage version: %d\n", fwimg_toc.magic, fwimg_toc.version);
-	if (ret < 0 || fwimg_toc.magic != 0xcafebabe || fwimg_toc.version != 2)
+	printf("Image magic: 0x%X exp 0xCAFEBABE\nImage version: %d\n", fwimg_toc.magic, fwimg_toc.version);
+	if (ret < 0 || fwimg_toc.magic != CFWIMG_MAGIC || fwimg_toc.version != 2)
 		goto err;
 	uint8_t target = fwimg_toc.target;
 	if (target > 6)
@@ -313,13 +313,13 @@ int update_default(const char* fwimage) {
 	ret = -1;
 	sceClibMemcpy(src_u, "sdstor0:int-lp-ina-os", sizeof("sdstor0:int-lp-ina-os"));
 	if (fwtool_talku(10, (int)src_u) >= 0)
-		ret = copyDir("ux0:data/fwtool/os0-patch", "grw0:");
+		ret = copyDir((ud0_pathdir) ? "ud0:os0-patch" : "ux0:data/fwtool/os0-patch", "grw0:");
 	printf("0x%X\n - vs0... ", ret);
 	ret = -1;
 	if (fwtool_talku(8, 0x300) >= 0)
-		ret = copyDir("ux0:data/fwtool/vs0-patch", "vs0:");
+		ret = copyDir((ud0_pathdir) ? "ud0:vs0-patch" : "ux0:data/fwtool/vs0-patch", "vs0:");
 	printf("0x%X\n - ur0... ", ret);
-	ret = copyDir("ux0:data/fwtool/ur0-patch", "ur0:");
+	ret = copyDir((ud0_pathdir) ? "ud0:ur0-patch" : "ux0:data/fwtool/ur0-patch", "ur0:");
 	printf("0x%X\n", ret);
 err:
 	return opret;
@@ -329,7 +329,7 @@ int update_proxy(void) {
 	psvDebugScreenClear(COLOR_BLACK);
 	printf("FWTOOL::FLASHTOOL started\n");
 
-	int ret = update_default(NULL);
+	int ret = update_default(NULL, 0);
 	if (ret == 0) {
 		COLORPRINTF(COLOR_CYAN, "\nALL DONE. ");
 		fwimg_get_pkey(0);

@@ -1,6 +1,6 @@
 /* THIS FILE IS A PART OF PSP2FWTOOL
  *
- * Copyright (C) 2019-2020 skgleba
+ * Copyright (C) 2019-2021 skgleba
  *
  * This software may be modified and distributed under the terms
  * of the MIT license.  See the LICENSE file for details.
@@ -42,9 +42,11 @@ extern int fwtool_flash_e2x(uint32_t size);
 extern int fwtool_unlink(void);
 extern int fwtool_talku(int cmd, int cmdbuf);
 extern int fwtool_rw_emmcimg(int dump);
+extern int fwtool_dualos_create(void);
+extern int fwtool_dualos_swap(void);
 
-static int redir_writes = 0, file_logging = 0, skip_int_chk = 0;
-static char src_u[64];
+static int redir_writes = 0, file_logging = 0, skip_int_chk = 0, already_dualos = 0, already_rpoint = 0;
+static char src_u[64], check_dos_br[0x200];
 
 void main_check_stop(uint32_t code) {
 	SceCtrlData pad, pad1;
@@ -72,10 +74,12 @@ void main_check_stop(uint32_t code) {
 
 #include "fwimg.c"
 #include "rpoint.c"
+#include "dualos.c"
 
-const char main_opt_str[4][32] = { " -> Flash a firmware image", " -> Create a EMMC image", " -> Restore the EMMC image", " -> Exit" };
-const char settings_opt_str[4][32] = { " -> Toggle file logging", " -> Toggle wredirect to GC-SD", " -> Toggle integrity checks", " -> Back" };
-int optct = 4;
+static char *main_opt_str[] = { " -> Flash a firmware image", " -> Create a EMMC image", " -> Install dualOS", " -> Exit" };
+static char *alt_main_opt_str[] = { " -> Flash a firmware image", " -> Restore the EMMC image", " -> Swap masterOS<->slaveOS", " -> Exit" };
+static const char settings_opt_str[5][32] = { " -> Toggle file logging", " -> Toggle wredirect to GC-SD", " -> Toggle integrity checks", " -> Wipe the dualOS superblock", " -> Back" };
+int optct = 4, soptct = 5;
 
 void erroff() {
 	COLORPRINTF(COLOR_RED, "ERR_REQ_OFF\n");
@@ -125,7 +129,7 @@ void settings_menu(int sel) {
 	psvDebugScreenClear(COLOR_BLACK);
 	COLORPRINTF(COLOR_CYAN, FWTOOL_VERSION_STR "\n");
 	COLORPRINTF(COLOR_YELLOW, "\nDEV SETTINGS\n");
-	for (int i = 0; i < optct; i++) {
+	for (int i = 0; i < soptct; i++) {
 		if (sel == i)
 			psvDebugScreenSetFgColor(COLOR_PURPLE);
 		printf("%s\n", settings_opt_str[i]);
@@ -150,7 +154,10 @@ int settings(void) {
 			} else if (sel == 2) {
 				skip_int_chk = fwtool_talku(17, 0);
 				COLORPRINTF(COLOR_YELLOW, "SKIP INT CHK: %s\n", (skip_int_chk) ? "ENABLED" : "DISABLED");
-			} else if (sel > 2)
+			} else if (sel == 3) {
+				fwtool_talku(21, 0);
+				COLORPRINTF(COLOR_YELLOW, "WIPE_DOS_SECTOR\n");
+			} else if (sel > 3)
 				return 69;
 			sceKernelDelayThread(0.3 * 1000 * 1000);
 		} else if (pad.buttons == SCE_CTRL_UP) {
@@ -159,7 +166,7 @@ int settings(void) {
 			settings_menu(sel);
 			sceKernelDelayThread(0.3 * 1000 * 1000);
 		} else if (pad.buttons == SCE_CTRL_DOWN) {
-			if (sel + 1 < optct)
+			if (sel + 1 < soptct)
 				sel++;
 			settings_menu(sel);
 			sceKernelDelayThread(0.3 * 1000 * 1000);
@@ -193,11 +200,27 @@ int main(int argc, char* argv[]) {
 	COLORPRINTF(COLOR_CYAN, FWTOOL_VERSION_STR "\n");
 	agreement();
 
+	// get dualOS state
+	if (fwtool_talku(20, (int)check_dos_br) < 0)
+		erroff();
+	if (*(uint32_t*)check_dos_br == DUALOS_MAGIC) {
+		already_dualos = 1;
+		main_opt_str[2] = alt_main_opt_str[2];
+	}
+	
+	// check if restore point exists
+	int rcfd = sceIoOpen("ux0:data/fwtool/fwrpoint.bin", SCE_O_RDONLY, 0);
+	if (rcfd >= 0) {
+		sceIoClose(rcfd);
+		already_rpoint = 1;
+		main_opt_str[1] = alt_main_opt_str[1];
+	}
+	
 	int sel = 0, ret = 0;
 	SceCtrlData pad;
 rloop:
 	main_menu(0);
-	sceKernelDelayThread(1 * 1000 * 1000);
+	sceKernelDelayThread(0.5 * 1000 * 1000);
 	while (1) {
 		sceCtrlPeekBufferPositive(0, &pad, 1);
 		if (pad.buttons == SCE_CTRL_CROSS) {
@@ -205,9 +228,9 @@ rloop:
 			if (sel == 0)
 				ret = update_proxy();
 			else if (sel == 1)
-				ret = create_proxy();
+				ret = (already_rpoint) ? restore_proxy() : create_proxy();
 			else if (sel == 2)
-				ret = restore_proxy();
+				ret = (already_dualos) ? swap_proxy() : install_proxy();
 			else if (sel > 2) {
 				sceKernelExitProcess(0);
 				return 0;

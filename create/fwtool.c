@@ -16,6 +16,9 @@
 #include "../plugin/fwtool.h"
 #include "../plugin/crc32.c"
 
+static const unsigned char newSL[0x10] = { 0x30, 0x30, 0x30, 0x30, 0x33, 0x36, 0x35, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30 };
+static const unsigned char oldSL[0x10] = { 0x30, 0x30, 0x30, 0x30, 0x33, 0x36, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30 };
+
 uint32_t getSz(const char* src) {
 	FILE* fp = fopen(src, "rb");
 	if (fp == NULL)
@@ -181,57 +184,6 @@ void read_image(const char* image) {
 	return;
 }
 
-// This is dirty af, remove on release
-void extract_image(const char* image, int part) {
-	int fp = open(image, O_RDWR);
-	if (fp < 0)
-		return;
-	pkg_toc fwimg_toc;
-	pread(fp, &fwimg_toc, sizeof(pkg_toc), 0);
-	printf("Image magic: 0x%X\nImage version: 0x%X\nTarget type: %s\nFS_PART count: %d\n\n", fwimg_toc.magic, fwimg_toc.version, target_dev[fwimg_toc.target], fwimg_toc.fs_count);
-	pkg_fs_etr fs_entry;
-	char cmdbuf[128];
-	uint32_t soff = (sizeof(pkg_toc) + (part * sizeof(pkg_fs_etr)));
-	memset(&fs_entry, 0, sizeof(pkg_fs_etr));
-	pread(fp, &fs_entry, sizeof(pkg_fs_etr), soff);
-	close(fp);
-	printf("\nFS_PART[%d] - magic 0x%04X | type %d\n"
-		" READ: size 0x%X | offset 0x%X | ungzip %d\n"
-		" WRITE: size 0x%X | offset 0x%X @ id %d\n"
-		" PART_CRC32: 0x%08X\n",
-		part, fs_entry.magic, fs_entry.type,
-		fs_entry.pkg_sz, fs_entry.pkg_off, (fs_entry.pkg_sz < fs_entry.dst_sz),
-		fs_entry.dst_sz, fs_entry.dst_off, fs_entry.part_id,
-		fs_entry.crc32);
-	uint32_t roff = fs_entry.pkg_off, rsz = fs_entry.pkg_sz, rbsz = 1;
-	// ------{PAIN START}-------
-	if (fs_entry.pkg_off % 0x200 == 0 && fs_entry.pkg_sz % 0x200 == 0) {
-		roff = fs_entry.pkg_off / 0x200;
-		rsz = fs_entry.pkg_sz / 0x200;
-		rbsz = 0x200;
-	} else if (fs_entry.pkg_off % 0x10 == 0 && fs_entry.pkg_sz % 0x10 == 0) {
-		roff = fs_entry.pkg_off / 0x10;
-		rsz = fs_entry.pkg_sz / 0x10;
-		rbsz = 0x10;
-	} else if (fs_entry.pkg_off % 4 == 0 && fs_entry.pkg_sz % 4 == 0) {
-		roff = fs_entry.pkg_off / 4;
-		rsz = fs_entry.pkg_sz / 4;
-		rbsz = 4;
-	} else if (fs_entry.pkg_off % 2 == 0 && fs_entry.pkg_sz % 2 == 0) {
-		roff = fs_entry.pkg_off / 2;
-		rsz = fs_entry.pkg_sz / 2;
-		rbsz = 2;
-	}
-	// ------{PAIN STOP}------
-	memset(cmdbuf, 0, 128);
-	sprintf(cmdbuf, "dd if=%s of=%d.img.gz ibs=1 skip=%d count=%d", image, part, roff, rsz);
-	system(cmdbuf);
-	memset(cmdbuf, 0, 128);
-	sprintf(cmdbuf, "gzip -d %d.img.gz", part);
-	system(cmdbuf);
-	return;
-}
-
 int main(int argc, char* argv[]) {
 
 	if (argc < 3) {
@@ -241,7 +193,7 @@ int main(int argc, char* argv[]) {
 
 	uint8_t target_type = 6;
 
-	// used devices
+	// opt
 	for (int i = 2; i < argc; i++) {
 		if (strcmp("-t", argv[i]) == 0) {
 			i = i + 1;
@@ -249,8 +201,11 @@ int main(int argc, char* argv[]) {
 		} else if (strcmp("-i", argv[i]) == 0) {
 			read_image(argv[1]);
 			return 0;
-		} else if (strcmp("-x", argv[i]) == 0) {
-			extract_image(argv[1], atoi(argv[3]));
+		} else if (strcmp("-eo", argv[i]) == 0) {
+			fat2e2x();
+			return 0;
+		} else if (strcmp("-cv", argv[i]) == 0) {
+			printf("oldSL: 0x%X\nnewSL: 0x%X\n", crc32(0, oldSL, 0x10), crc32(0, newSL, 0x10));
 			return 0;
 		}
 	}

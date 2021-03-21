@@ -2,7 +2,7 @@ fwtoolkernel:
   attributes: 0
   version:
     major: 1
-    minor: 2
+    minor: 3
   main:
     start: module_start
     stop: module_stop
@@ -18,3 +18,5 @@ fwtoolkernel:
         - fwtool_read_fwimage
         - fwtool_unlink
         - fwtool_rw_emmcimg
+        - fwtool_dualos_create
+        - fwtool_dualos_swap
