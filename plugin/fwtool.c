@@ -202,360 +202,6 @@ int default_write(uint32_t off, void* buf, uint32_t sz) {
 	return ksceSdifWriteSectorMmc(emmc, off, buf, sz);
 }
 
-// swap EMMC masterOS<->slaveOS if dualOS is installed on the EMMC
-int fwtool_dualos_swap(void) {
-	int state = 0;
-	ENTER_SYSCALL(state);
-
-	LOG("dualOS::swap() started\n");
-	
-	memset(bl_buf, 0, 0x200);
-	memset(fsp_buf, 0, 0x1000000);
-	memset(gz_buf, 0, 0x1000000);
-	dualos_super_t* dualos_br = (dualos_super_t*)bl_buf;
-	master_block_t* current_br = (master_block_t*)mbr;
-	master_block_t* swap_br_0 = (master_block_t*)fsp_buf;
-	master_block_t* swap_br_1 = (master_block_t*)(fsp_buf + 0x200);
-	
-	LOG("getting dualOS info\n");
-	uint32_t dualos_info_off = current_br->device_size - DOS_RESERVED_SZ;
-	if (read_real_mmc(emmc, dualos_info_off, bl_buf, 1) < 0 || dualos_br->magic != DUALOS_MAGIC)
-		goto sdosbend;
-	if (!skip_int_chk && dualos_br->device_size != current_br->device_size)
-		goto sdosbend;
-	int part_id = find_part(current_br, 3, 1);
-	if (part_id < 0)
-		goto sdosbend;
-	uint32_t os0_off = current_br->partitions[part_id].off;
-	
-	if (dualos_br->master_mode) { // masterOS->slaveOS
-		LOG("backing up the current BR and os0\n");
-		if (read_real_mmc(emmc, 0, fsp_buf, DOS_BKP_BLOCK_SZ) < 0 || read_real_mmc(emmc, os0_off, gz_buf, DOS_BKP_BLOCK_SZ) < 0)
-			goto sdosbend;
-		dualos_br->master_crc[0] = crc32(0, fsp_buf, DOS_BKP_BLOCK_SZ * 0x200);
-		dualos_br->master_crc[1] = crc32(0, gz_buf, DOS_BKP_BLOCK_SZ * 0x200);
-		if (default_write(dualos_info_off + DOS_MASTER_BKP_START, fsp_buf, DOS_BKP_BLOCK_SZ) < 0
-			|| default_write(dualos_info_off + DOS_MASTER_OS0_START, gz_buf, DOS_BKP_BLOCK_SZ) < 0)
-			goto sdosbend;
-		LOG("updating dualOS superblock\n");
-		dualos_br->master_mode = 0;
-		if (default_write(dualos_info_off, bl_buf, 1) < 0)
-			goto sdosbend;
-		LOG("reading the new BR and os0 (slave)\n");
-		if (read_real_mmc(emmc, dualos_info_off + DOS_SLAVE_BKP_START, fsp_buf, DOS_BKP_BLOCK_SZ) < 0 
-			|| read_real_mmc(emmc, dualos_info_off + DOS_SLAVE_OS0_START, gz_buf, DOS_BKP_BLOCK_SZ) < 0)
-			goto sdosbend;
-		LOG("checking the new BR and os0 (slave)\n");
-		if (cmp_crc32(dualos_br->slave_crc[0], fsp_buf, DOS_BKP_BLOCK_SZ) < 0 || cmp_crc32(dualos_br->slave_crc[1], gz_buf, DOS_BKP_BLOCK_SZ) < 0)
-			goto sdosbend;
-		part_id = find_part(swap_br_0, 3, 1);
-		if (part_id < 0)
-			goto sdosbend;
-		else if (swap_br_0->partitions[part_id].off == 2) {
-			part_id = find_part(swap_br_1, 3, 1);
-			if (part_id < 0)
-				goto sdosbend;
-			os0_off = swap_br_1->partitions[part_id].off;
-		} else
-			os0_off = swap_br_0->partitions[part_id].off;
-		if (os0_off < DOS_BKP_BLOCK_SZ)
-			goto sdosbend;
-		LOG("writing the new BR and os0 (slave)\n");
-		if (default_write(0, fsp_buf, DOS_BKP_BLOCK_SZ) < 0 || default_write(os0_off, gz_buf, DOS_BKP_BLOCK_SZ) < 0)
-			goto sdosbend;
-	} else { // slaveOS->masterOS
-		LOG("backing up the current BR and os0\n");
-		if (read_real_mmc(emmc, 0, fsp_buf, DOS_BKP_BLOCK_SZ) < 0 || read_real_mmc(emmc, os0_off, gz_buf, DOS_BKP_BLOCK_SZ) < 0)
-			goto sdosbend;
-		dualos_br->slave_crc[0] = crc32(0, fsp_buf, DOS_BKP_BLOCK_SZ * 0x200);
-		dualos_br->slave_crc[1] = crc32(0, gz_buf, DOS_BKP_BLOCK_SZ * 0x200);
-		if (default_write(dualos_info_off + DOS_SLAVE_BKP_START, fsp_buf, DOS_BKP_BLOCK_SZ) < 0
-			|| default_write(dualos_info_off + DOS_SLAVE_OS0_START, gz_buf, DOS_BKP_BLOCK_SZ) < 0)
-			goto sdosbend;
-		LOG("updating dualOS superblock\n");
-		dualos_br->master_mode = 1;
-		if (default_write(dualos_info_off, bl_buf, 1) < 0)
-			goto sdosbend;
-		LOG("reading the new BR and os0 (master)\n");
-		if (read_real_mmc(emmc, dualos_info_off + DOS_MASTER_BKP_START, fsp_buf, DOS_BKP_BLOCK_SZ) < 0
-			|| read_real_mmc(emmc, dualos_info_off + DOS_MASTER_OS0_START, gz_buf, DOS_BKP_BLOCK_SZ) < 0)
-			goto sdosbend;
-		LOG("checking the new BR and os0 (master)\n");
-		if (cmp_crc32(dualos_br->master_crc[0], fsp_buf, DOS_BKP_BLOCK_SZ) < 0 || cmp_crc32(dualos_br->master_crc[1], gz_buf, DOS_BKP_BLOCK_SZ) < 0)
-			goto sdosbend;
-		part_id = find_part(swap_br_0, 3, 1);
-		if (part_id < 0)
-			goto sdosbend;
-		else if (swap_br_0->partitions[part_id].off == 2) {
-			part_id = find_part(swap_br_1, 3, 1);
-			if (part_id < 0)
-				goto sdosbend;
-			os0_off = swap_br_1->partitions[part_id].off;
-		} else
-			os0_off = swap_br_0->partitions[part_id].off;
-		if (os0_off < DOS_BKP_BLOCK_SZ)
-			goto sdosbend;
-		LOG("writing the new BR and os0 (master)\n");
-		if (default_write(0, fsp_buf, DOS_BKP_BLOCK_SZ) < 0 || default_write(os0_off, gz_buf, DOS_BKP_BLOCK_SZ) < 0)
-			goto sdosbend;
-	}
-	
-	LOG("all done!\n");
-
-	EXIT_SYSCALL(state);
-	return 0;
-sdosbend:
-	LOG("ERROR!\n");
-	EXIT_SYSCALL(state);
-	return -1;
-}
-
-// install dualOS on the default write device
-int fwtool_dualos_create(void) {
-	int state = 0;
-	ENTER_SYSCALL(state);
-	
-	LOG("dualOS::create() started\n");
-	
-	master_block_t master_br, slave_br;
-	master_block_t* current_br = (master_block_t*)mbr, * curreal_br = (master_block_t*)real_mbr;
-	
-	LOG("creating masterOS ptable\n");
-	memcpy(&master_br, (void*)current_br, 0x200);
-	if (master_br.partitions[11].code != 0x7 || master_br.partitions[11].off != 0x200000 || master_br.partitions[13].code != 0) // Make sure its a default, masterOS partition table
-		goto cdosbend;
-	master_br.partitions[11].sz = 0x100000; // 512MB ur0
-	master_br.partitions[12].code = 0x8;
-	master_br.partitions[12].type = 0x7;
-	master_br.partitions[12].flags = 0x00000fff;
-	master_br.partitions[12].unk = master_br.partitions[11].unk;
-	master_br.partitions[12].off = 0x300000;
-	master_br.partitions[12].sz = 0x100000;
-	master_br.partitions[13].code = 0xF;
-	master_br.partitions[13].type = 0xDA;
-	master_br.partitions[13].flags = 0x00000fff;
-	master_br.partitions[13].unk = 0;
-	master_br.partitions[13].off = DOS_SLAVE_START;
-	master_br.partitions[13].sz = master_br.device_size - DOS_SLAVE_START;
-	master_br.partitions[14].sz = master_br.partitions[13].sz;
-	master_br.partitions[15].sz = master_br.device_size;
-	
-	LOG("creating slaveOS ptable\n");
-	memcpy(&slave_br, &master_br, 0x200);
-	int part_id = find_part(&slave_br, 4, 0);
-	slave_br.partitions[part_id].off = DOS_SLAVE_START;
-	slave_br.partitions[11].off = DOS_SLAVE_START + DOS_VS0_SIZE;
-	slave_br.partitions[11].sz = slave_br.device_size - DOS_RESERVED_SZ - slave_br.partitions[11].off;
-	slave_br.partitions[13].off = slave_br.device_size - DOS_RESERVED_SZ;
-	slave_br.partitions[13].sz = DOS_RESERVED_SZ;
-	slave_br.partitions[14].sz = slave_br.partitions[13].sz;
-	
-	LOG("creating dualOS superblock\n");
-	memset(bl_buf, 0, 0x400000);
-	dualos_super_t* dualos_br = (dualos_super_t *)bl_buf;
-	dualos_br->magic = DUALOS_MAGIC;
-	dualos_br->device_size = current_br->device_size;
-	dualos_br->master_mode = 1;
-	part_id = find_part(current_br, 3, 1);
-	if (part_id < 0 || read_real_mmc(emmc, 0, fsp_buf, DOS_BKP_BLOCK_SZ) < 0 || read_real_mmc(emmc, current_br->partitions[part_id].off, gz_buf, DOS_BKP_BLOCK_SZ) < 0)
-		goto cdosbend;
-	memcpy(fsp_buf + 0x200, &master_br, 0x200);
-	if (curreal_br->partitions[part_id].off == 2)
-		master_br.partitions[part_id].off = 2;
-	memcpy(fsp_buf, &master_br, 0x200);
-	LOG("calc masterOS swap crcs\n");
-	dualos_br->master_crc[0] = crc32(0, fsp_buf, DOS_BKP_BLOCK_SZ * 0x200);
-	dualos_br->master_crc[1] = crc32(0, gz_buf, DOS_BKP_BLOCK_SZ * 0x200);
-	LOG("write - masterOS\n");
-	if (default_write(current_br->device_size - DOS_RESERVED_SZ + DOS_MASTER_BKP_START, fsp_buf, DOS_BKP_BLOCK_SZ) < 0
-		|| default_write(current_br->device_size - DOS_RESERVED_SZ + DOS_MASTER_OS0_START, gz_buf, DOS_BKP_BLOCK_SZ) < 0)
-		goto cdosbend;
-	LOG("calc slaveOS swap crcs\n");
-	memcpy(fsp_buf + 0x200, &slave_br, 0x200);
-	if (curreal_br->partitions[part_id].off == 2)
-		slave_br.partitions[part_id].off = 2;
-	memcpy(fsp_buf, &slave_br, 0x200);
-	dualos_br->slave_crc[0] = crc32(0, fsp_buf, DOS_BKP_BLOCK_SZ * 0x200);
-	dualos_br->slave_crc[1] = dualos_br->master_crc[1];
-	LOG("write - slaveOS\n");
-	if (default_write(current_br->device_size - DOS_RESERVED_SZ + DOS_SLAVE_BKP_START, fsp_buf, DOS_BKP_BLOCK_SZ) < 0
-		|| default_write(current_br->device_size - DOS_RESERVED_SZ + DOS_SLAVE_OS0_START, gz_buf, DOS_BKP_BLOCK_SZ) < 0)
-		goto cdosbend;
-	
-	LOG("copying masterOS vs0 to slaveOS vs0\n");
-	memset(fsp_buf, 0, 0x1000000);
-	part_id = find_part(current_br, 4, 0);
-	uint32_t copied = 0, size = DOS_VS0_SIZE, offset = current_br->partitions[part_id].off;
-	if (offset < DOS_BKP_BLOCK_SZ)
-		goto cdosbend;
-	while ((copied + 0x8000) <= size) {
-		if (read_real_mmc(emmc, offset + copied, fsp_buf, 0x8000) < 0 || default_write(DOS_SLAVE_START + copied, fsp_buf, 0x8000) < 0)
-			goto cdosbend;
-		copied-=-0x8000;
-	}
-	
-	LOG("writing dualOS superblock\n");
-	if (default_write(current_br->device_size - DOS_RESERVED_SZ, bl_buf, DOS_MASTER_BKP_START) < 0)
-		goto cdosbend;
-	
-	LOG("all done, writing the masterOS boot record\n");
-	memset(gz_buf, 0, 0x1000000);
-	if (read_real_mmc(emmc, current_br->device_size - DOS_RESERVED_SZ + DOS_MASTER_BKP_START, gz_buf, DOS_BKP_BLOCK_SZ) < 0
-		|| default_write(0, gz_buf, DOS_BKP_BLOCK_SZ) < 0)
-		goto cdosbend;
-	
-	LOG("all done!\n");
-	
-	EXIT_SYSCALL(state);
-	return 0;
-cdosbend:
-	LOG("ERROR!\n");
-	EXIT_SYSCALL(state);
-	return -1;
-}
-
-// [dump]/restore emmc to/from fwrpoint
-int fwtool_rw_emmcimg(int dump) {
-	int state = 0, opret = -1;
-	ENTER_SYSCALL(state);
-	LOG("fwtool_rw_emmcimg %s (%d)\n", fwrpoint, dump);
-	int fd = 0, crcn = 0;
-	uint32_t copied = 0, size = 0;
-	memset(fsp_buf, 0, 0x1000000);
-	emmcimg_super img_super;
-	memset(&img_super, 0, sizeof(emmcimg_super));
-	master_block_t* master = (master_block_t*)real_mbr;
-	if (dump > 0) {
-		size = (dump == 2) ? master->partitions[find_part(master, 7, 0)].off : master->device_size;
-		img_super.magic = RPOINT_MAGIC;
-		img_super.size = size;
-		LOG("dumping (0x%X blocks)...\n", size);
-		fd = ksceIoOpen(fwrpoint, SCE_O_WRONLY | SCE_O_TRUNC | SCE_O_CREAT, 6);
-		if (size == 0 || fd < 0 || ksceIoWrite(fd, &img_super, sizeof(emmcimg_super)) < 0)
-			goto exrwend;
-		while ((copied + 0x8000) <= size) {
-			if (read_real_mmc(emmc, copied, fsp_buf, 0x8000) < 0 || ksceIoPwrite(fd, fsp_buf, 0x8000 * 0x200, sizeof(emmcimg_super) + (copied * 0x200)) < 0)
-				goto exrwend;
-			img_super.blk_crc[crcn] = crc32(0, fsp_buf, 0x8000 * 0x200);
-			crcn -= -1;
-			copied -= -0x8000;
-		}
-		if (copied < size && (size - copied) <= 0x8000) {
-			if (read_real_mmc(emmc, copied, fsp_buf, (size - copied)) < 0 || ksceIoPwrite(fd, fsp_buf, (size - copied) * 0x200, sizeof(emmcimg_super) + (copied * 0x200)) < 0)
-				goto exrwend;
-			img_super.blk_crc[crcn] = crc32(0, fsp_buf, (size - copied) * 0x200);
-			copied = size;
-		}
-		img_super.prev_crc = crc32(0, img_super.blk_crc, 0xed * 4);
-		LOG("master crc 0x%X\n", img_super.prev_crc);
-		if (img_super.blk_crc[0] == 0 || ksceIoPwrite(fd, &img_super, sizeof(emmcimg_super), 0) < 0)
-			goto exrwend;
-	} else {
-		LOG("getting image size...\n");
-		fd = ksceIoOpen(fwrpoint, SCE_O_RDONLY, 0);
-		if (fd < 0 || ksceIoRead(fd, &img_super, sizeof(emmcimg_super)) < 0)
-			goto exrwend;
-		size = img_super.size;
-		if (img_super.magic != RPOINT_MAGIC || size == 0 || img_super.blk_crc[0] == 0 || cmp_crc32(img_super.prev_crc, img_super.blk_crc, 0xed * 4) < 0)
-			goto exrwend;
-		LOG("restoring (0x%X blocks)...\n", size);
-		while ((copied + 0x8000) <= size) {
-			if (ksceIoPread(fd, fsp_buf, 0x8000 * 0x200, sizeof(emmcimg_super) + (copied * 0x200)) < 0 || cmp_crc32(img_super.blk_crc[crcn], fsp_buf, 0x8000 * 0x200) < 0 || default_write(copied, fsp_buf, 0x8000) < 0)
-				goto exrwend;
-			crcn -= -1;
-			copied -= -0x8000;
-		}
-		if (copied < size && (size - copied) <= 0x8000) {
-			if (ksceIoPread(fd, fsp_buf, (size - copied) * 0x200, sizeof(emmcimg_super) + (copied * 0x200)) < 0 || cmp_crc32(img_super.blk_crc[crcn], fsp_buf, (size - copied) * 0x200) < 0 || default_write(copied, fsp_buf, (size - copied)) < 0)
-				goto exrwend;
-			copied = size;
-		}
-	}
-
-	LOG("write done 0x%X=0x%X?\n", copied, size);
-	if (copied != size)
-		opret = -1;
-	else
-		opret = 0;
-
-exrwend:
-	ksceIoClose(fd);
-	LOG("exit call || 0x%X\n", opret);
-	EXIT_SYSCALL(state);
-	return opret;
-}
-
-// read [size] bytes from fwimage @ [offset] to fsp buf, check 0x200 to match [exp_crc32], g[unzip] the output
-int fwtool_read_fwimage(uint32_t offset, uint32_t size, uint32_t exp_crc32, uint32_t unzip) {
-	if (size > 0x1000000 || size == 0 || offset == 0 || unzip > 0x1000000)
-		return -1;
-	int state = 0, opret = -1;
-	ENTER_SYSCALL(state);
-	LOG("fwtool_read_fwimage 0x%X 0x%X 0x%X 0x%X\n", offset, size, exp_crc32, unzip);
-
-	memset(fsp_buf, 0, 0x1000000);
-	if (unzip > 0)
-		memset(gz_buf, 0, 0x1000000);
-
-	LOG("reading fwimage...\n");
-	SceIoStat stat;
-	int ret = ksceIoGetstat(fwimage, &stat);
-	if (ret < 0 || stat.st_size < (offset + size))
-		goto rerr;
-
-	int fd = ksceIoOpen(fwimage, SCE_O_RDONLY, 0);
-	ret = ksceIoPread(fd, (unzip > 0) ? gz_buf : fsp_buf, size, offset);
-	ksceIoClose(fd);
-	if (ret < 0)
-		goto rerr;
-
-	LOG("crchecking...\n");
-	if (cmp_crc32(exp_crc32, (unzip > 0) ? gz_buf : fsp_buf, 0x200) < 0)
-		goto rerr;
-
-	LOG("ungzipping...\n");
-	if (unzip > 0)
-		opret = ksceGzipDecompress(fsp_buf, unzip, gz_buf, NULL);
-	else
-		opret = 0;
-
-rerr:
-	LOG("exit call || 0x%X\n", opret);
-	EXIT_SYSCALL(state);
-	return opret;
-}
-
-// default_write [size] bytes from fsp buf to inactive [partition] @ [offset]
-int fwtool_write_partition(uint32_t offset, uint32_t size, uint8_t partition) {
-	if (size == 0 || size > 0x1000000 || (size % 0x200) != 0 || (offset % 0x200) != 0 || partition == 0)
-		return -1;
-	size = size / 0x200;
-	offset = offset / 0x200;
-	int state = 0, opret = -1;
-	ENTER_SYSCALL(state);
-	LOG("fwtool_write_partition 0x%X 0x%X %d (%s)\n", size, offset, partition, pcode_str[partition]);
-
-	master_block_t* master = (master_block_t*)mbr;
-	int pno = find_part(master, partition, 0);
-	if (pno < 0)
-		goto werr;
-
-	LOG("getting partition off...\n");
-	uint32_t main_off = master->partitions[pno].off;
-	if (main_off == 0 || (offset + size) > master->partitions[pno].sz)
-		goto werr;
-
-	LOG("writing partition...\n");
-	if (default_write(main_off + offset, fsp_buf, size) < 0)
-		goto werr;
-
-	opret = 0;
-werr:
-	LOG("exit call || 0x%X\n", opret);
-	EXIT_SYSCALL(state);
-	return opret;
-}
-
 // personalize bootloaders in fsp buf. set [fup] if should copy from bl buf first
 int fwtool_personalize_bl(int fup) {
 	int state = 0, opret = -1;
@@ -679,6 +325,362 @@ int fwtool_unlink(void) {
 	LOG("exit call || 0x%X\n", opret);
 	EXIT_SYSCALL(state);
 	return opret;
+}
+
+// read [size] bytes from fwimage @ [offset] to fsp buf, check 0x200 to match [exp_crc32], g[unzip] the output
+int fwtool_read_fwimage(uint32_t offset, uint32_t size, uint32_t exp_crc32, uint32_t unzip) {
+	if (size > 0x1000000 || size == 0 || offset == 0 || unzip > 0x1000000)
+		return -1;
+	int state = 0, opret = -1;
+	ENTER_SYSCALL(state);
+	LOG("fwtool_read_fwimage 0x%X 0x%X 0x%X 0x%X\n", offset, size, exp_crc32, unzip);
+
+	memset(fsp_buf, 0, 0x1000000);
+	if (unzip > 0)
+		memset(gz_buf, 0, 0x1000000);
+
+	LOG("reading fwimage...\n");
+	SceIoStat stat;
+	int ret = ksceIoGetstat(fwimage, &stat);
+	if (ret < 0 || stat.st_size < (offset + size))
+		goto rerr;
+
+	int fd = ksceIoOpen(fwimage, SCE_O_RDONLY, 0);
+	ret = ksceIoPread(fd, (unzip > 0) ? gz_buf : fsp_buf, size, offset);
+	ksceIoClose(fd);
+	if (ret < 0)
+		goto rerr;
+
+	LOG("crchecking...\n");
+	if (cmp_crc32(exp_crc32, (unzip > 0) ? gz_buf : fsp_buf, 0x200) < 0)
+		goto rerr;
+
+	LOG("ungzipping...\n");
+	if (unzip > 0)
+		opret = ksceGzipDecompress(fsp_buf, unzip, gz_buf, NULL);
+	else
+		opret = 0;
+
+rerr:
+	LOG("exit call || 0x%X\n", opret);
+	EXIT_SYSCALL(state);
+	return opret;
+}
+
+// default_write [size] bytes from fsp buf to inactive [partition] @ [offset]
+int fwtool_write_partition(uint32_t offset, uint32_t size, uint8_t partition) {
+	if (size == 0 || size > 0x1000000 || (size % 0x200) != 0 || (offset % 0x200) != 0 || partition == 0)
+		return -1;
+	size = size / 0x200;
+	offset = offset / 0x200;
+	int state = 0, opret = -1;
+	ENTER_SYSCALL(state);
+	LOG("fwtool_write_partition 0x%X 0x%X %d (%s)\n", size, offset, partition, pcode_str[partition]);
+
+	master_block_t* master = (master_block_t*)mbr;
+	int pno = find_part(master, partition, 0);
+	if (pno < 0)
+		goto werr;
+
+	LOG("getting partition off...\n");
+	uint32_t main_off = master->partitions[pno].off;
+	if (main_off == 0 || (offset + size) > master->partitions[pno].sz)
+		goto werr;
+
+	LOG("writing partition...\n");
+	if (default_write(main_off + offset, fsp_buf, size) < 0)
+		goto werr;
+
+	opret = 0;
+werr:
+	LOG("exit call || 0x%X\n", opret);
+	EXIT_SYSCALL(state);
+	return opret;
+}
+
+// [dump]/restore emmc to/from fwrpoint
+int fwtool_rw_emmcimg(int dump) {
+	int state = 0, opret = -1;
+	ENTER_SYSCALL(state);
+	LOG("fwtool_rw_emmcimg %s (%d)\n", fwrpoint, dump);
+	int fd = 0, crcn = 0;
+	uint32_t copied = 0, size = 0;
+	memset(fsp_buf, 0, 0x1000000);
+	emmcimg_super img_super;
+	memset(&img_super, 0, sizeof(emmcimg_super));
+	master_block_t* master = (master_block_t*)real_mbr;
+	if (dump > 0) {
+		size = (dump == 2) ? master->partitions[find_part(master, 7, 0)].off : master->device_size;
+		img_super.magic = RPOINT_MAGIC;
+		img_super.size = size;
+		LOG("dumping (0x%X blocks)...\n", size);
+		fd = ksceIoOpen(fwrpoint, SCE_O_WRONLY | SCE_O_TRUNC | SCE_O_CREAT, 6);
+		if (size == 0 || fd < 0 || ksceIoWrite(fd, &img_super, sizeof(emmcimg_super)) < 0)
+			goto exrwend;
+		while ((copied + 0x8000) <= size) {
+			if (read_real_mmc(emmc, copied, fsp_buf, 0x8000) < 0 || ksceIoPwrite(fd, fsp_buf, 0x8000 * 0x200, sizeof(emmcimg_super) + (copied * 0x200)) < 0)
+				goto exrwend;
+			img_super.blk_crc[crcn] = crc32(0, fsp_buf, 0x8000 * 0x200);
+			crcn -= -1;
+			copied -= -0x8000;
+		}
+		if (copied < size && (size - copied) <= 0x8000) {
+			if (read_real_mmc(emmc, copied, fsp_buf, (size - copied)) < 0 || ksceIoPwrite(fd, fsp_buf, (size - copied) * 0x200, sizeof(emmcimg_super) + (copied * 0x200)) < 0)
+				goto exrwend;
+			img_super.blk_crc[crcn] = crc32(0, fsp_buf, (size - copied) * 0x200);
+			copied = size;
+		}
+		img_super.prev_crc = crc32(0, img_super.blk_crc, 0xed * 4);
+		LOG("master crc 0x%X\n", img_super.prev_crc);
+		if (img_super.blk_crc[0] == 0 || ksceIoPwrite(fd, &img_super, sizeof(emmcimg_super), 0) < 0)
+			goto exrwend;
+	} else {
+		LOG("getting image size...\n");
+		fd = ksceIoOpen(fwrpoint, SCE_O_RDONLY, 0);
+		if (fd < 0 || ksceIoRead(fd, &img_super, sizeof(emmcimg_super)) < 0)
+			goto exrwend;
+		size = img_super.size;
+		if (img_super.magic != RPOINT_MAGIC || size == 0 || img_super.blk_crc[0] == 0 || cmp_crc32(img_super.prev_crc, img_super.blk_crc, 0xed * 4) < 0)
+			goto exrwend;
+		LOG("restoring (0x%X blocks)...\n", size);
+		while ((copied + 0x8000) <= size) {
+			if (ksceIoPread(fd, fsp_buf, 0x8000 * 0x200, sizeof(emmcimg_super) + (copied * 0x200)) < 0 || cmp_crc32(img_super.blk_crc[crcn], fsp_buf, 0x8000 * 0x200) < 0 || default_write(copied, fsp_buf, 0x8000) < 0)
+				goto exrwend;
+			crcn -= -1;
+			copied -= -0x8000;
+		}
+		if (copied < size && (size - copied) <= 0x8000) {
+			if (ksceIoPread(fd, fsp_buf, (size - copied) * 0x200, sizeof(emmcimg_super) + (copied * 0x200)) < 0 || cmp_crc32(img_super.blk_crc[crcn], fsp_buf, (size - copied) * 0x200) < 0 || default_write(copied, fsp_buf, (size - copied)) < 0)
+				goto exrwend;
+			copied = size;
+		}
+	}
+
+	LOG("write done 0x%X=0x%X?\n", copied, size);
+	if (copied != size)
+		opret = -1;
+	else
+		opret = 0;
+
+exrwend:
+	ksceIoClose(fd);
+	LOG("exit call || 0x%X\n", opret);
+	EXIT_SYSCALL(state);
+	return opret;
+}
+
+// install dualOS on the default write device
+int fwtool_dualos_create(void) {
+	int state = 0;
+	ENTER_SYSCALL(state);
+
+	LOG("dualOS::create() started\n");
+
+	master_block_t master_br, slave_br;
+	master_block_t* current_br = (master_block_t*)mbr, * curreal_br = (master_block_t*)real_mbr;
+
+	LOG("creating masterOS ptable\n");
+	memcpy(&master_br, (void*)current_br, 0x200);
+	if (master_br.partitions[11].code != 0x7 || master_br.partitions[11].off != 0x200000 || master_br.partitions[13].code != 0) // Make sure its a default, masterOS partition table
+		goto cdosbend;
+	master_br.partitions[11].sz = 0x100000; // 512MB ur0
+	master_br.partitions[12].code = 0x8;
+	master_br.partitions[12].type = 0x7;
+	master_br.partitions[12].flags = 0x00000fff;
+	master_br.partitions[12].unk = master_br.partitions[11].unk;
+	master_br.partitions[12].off = 0x300000;
+	master_br.partitions[12].sz = 0x100000;
+	master_br.partitions[13].code = 0xF;
+	master_br.partitions[13].type = 0xDA;
+	master_br.partitions[13].flags = 0x00000fff;
+	master_br.partitions[13].unk = 0;
+	master_br.partitions[13].off = DOS_SLAVE_START;
+	master_br.partitions[13].sz = master_br.device_size - DOS_SLAVE_START;
+	master_br.partitions[14].sz = master_br.partitions[13].sz;
+	master_br.partitions[15].sz = master_br.device_size;
+
+	LOG("creating slaveOS ptable\n");
+	memcpy(&slave_br, &master_br, 0x200);
+	int part_id = find_part(&slave_br, 4, 0);
+	slave_br.partitions[part_id].off = DOS_SLAVE_START;
+	part_id = find_part(&slave_br, 5, 0);
+	slave_br.partitions[part_id].off = DOS_SLAVE_START + DOS_VS0_SIZE;
+	slave_br.partitions[11].off = DOS_SLAVE_START + DOS_VS0_SIZE + DOS_VD0_SIZE;
+	slave_br.partitions[11].sz = slave_br.device_size - DOS_RESERVED_SZ - slave_br.partitions[11].off;
+	slave_br.partitions[13].off = slave_br.device_size - DOS_RESERVED_SZ;
+	slave_br.partitions[13].sz = DOS_RESERVED_SZ;
+	slave_br.partitions[14].sz = slave_br.partitions[13].sz;
+
+	LOG("creating dualOS superblock\n");
+	memset(bl_buf, 0, 0x400000);
+	dualos_super_t* dualos_br = (dualos_super_t*)bl_buf;
+	dualos_br->magic = DUALOS_MAGIC;
+	dualos_br->device_size = current_br->device_size;
+	dualos_br->master_mode = 1;
+	part_id = find_part(current_br, 3, 1);
+	if (part_id < 0 || read_real_mmc(emmc, 0, fsp_buf, DOS_BKP_BLOCK_SZ) < 0 || read_real_mmc(emmc, current_br->partitions[part_id].off, gz_buf, DOS_BKP_BLOCK_SZ) < 0)
+		goto cdosbend;
+	memcpy(fsp_buf + 0x200, &master_br, 0x200);
+	if (curreal_br->partitions[part_id].off == 2)
+		master_br.partitions[part_id].off = 2;
+	memcpy(fsp_buf, &master_br, 0x200);
+	LOG("calc masterOS swap crcs\n");
+	dualos_br->master_crc[0] = crc32(0, fsp_buf, DOS_BKP_BLOCK_SZ * 0x200);
+	dualos_br->master_crc[1] = crc32(0, gz_buf, DOS_BKP_BLOCK_SZ * 0x200);
+	LOG("write - masterOS\n");
+	if (default_write(current_br->device_size - DOS_RESERVED_SZ + DOS_MASTER_BKP_START, fsp_buf, DOS_BKP_BLOCK_SZ) < 0
+		|| default_write(current_br->device_size - DOS_RESERVED_SZ + DOS_MASTER_OS0_START, gz_buf, DOS_BKP_BLOCK_SZ) < 0)
+		goto cdosbend;
+	LOG("calc slaveOS swap crcs\n");
+	memcpy(fsp_buf + 0x200, &slave_br, 0x200);
+	if (curreal_br->partitions[part_id].off == 2)
+		slave_br.partitions[part_id].off = 2;
+	memcpy(fsp_buf, &slave_br, 0x200);
+	dualos_br->slave_crc[0] = crc32(0, fsp_buf, DOS_BKP_BLOCK_SZ * 0x200);
+	dualos_br->slave_crc[1] = dualos_br->master_crc[1];
+	LOG("write - slaveOS\n");
+	if (default_write(current_br->device_size - DOS_RESERVED_SZ + DOS_SLAVE_BKP_START, fsp_buf, DOS_BKP_BLOCK_SZ) < 0
+		|| default_write(current_br->device_size - DOS_RESERVED_SZ + DOS_SLAVE_OS0_START, gz_buf, DOS_BKP_BLOCK_SZ) < 0)
+		goto cdosbend;
+
+	LOG("copying masterOS vs0 to slaveOS vs0\n");
+	memset(fsp_buf, 0, 0x1000000);
+	part_id = find_part(current_br, 4, 0);
+	uint32_t copied = 0, size = DOS_VS0_SIZE, offset = current_br->partitions[part_id].off;
+	if (offset < DOS_BKP_BLOCK_SZ)
+		goto cdosbend;
+	while ((copied + 0x8000) <= size) {
+		if (read_real_mmc(emmc, offset + copied, fsp_buf, 0x8000) < 0 || default_write(DOS_SLAVE_START + copied, fsp_buf, 0x8000) < 0)
+			goto cdosbend;
+		copied -= -0x8000;
+	}
+
+	LOG("writing dualOS superblock\n");
+	if (default_write(current_br->device_size - DOS_RESERVED_SZ, bl_buf, DOS_MASTER_BKP_START) < 0)
+		goto cdosbend;
+
+	LOG("all done, writing the masterOS boot record\n");
+	memset(gz_buf, 0, 0x1000000);
+	if (read_real_mmc(emmc, current_br->device_size - DOS_RESERVED_SZ + DOS_MASTER_BKP_START, gz_buf, DOS_BKP_BLOCK_SZ) < 0
+		|| default_write(0, gz_buf, DOS_BKP_BLOCK_SZ) < 0)
+		goto cdosbend;
+
+	LOG("all done!\n");
+
+	EXIT_SYSCALL(state);
+	return 0;
+cdosbend:
+	LOG("ERROR!\n");
+	EXIT_SYSCALL(state);
+	return -1;
+}
+
+// swap EMMC masterOS<->slaveOS if dualOS is installed on the EMMC
+int fwtool_dualos_swap(void) {
+	int state = 0;
+	ENTER_SYSCALL(state);
+
+	LOG("dualOS::swap() started\n");
+	
+	memset(bl_buf, 0, 0x200);
+	memset(fsp_buf, 0, 0x1000000);
+	memset(gz_buf, 0, 0x1000000);
+	dualos_super_t* dualos_br = (dualos_super_t*)bl_buf;
+	master_block_t* current_br = (master_block_t*)mbr;
+	master_block_t* swap_br_0 = (master_block_t*)fsp_buf;
+	master_block_t* swap_br_1 = (master_block_t*)(fsp_buf + 0x200);
+	
+	LOG("getting dualOS info\n");
+	uint32_t dualos_info_off = current_br->device_size - DOS_RESERVED_SZ;
+	if (read_real_mmc(emmc, dualos_info_off, bl_buf, 1) < 0 || dualos_br->magic != DUALOS_MAGIC)
+		goto sdosbend;
+	if (!skip_int_chk && dualos_br->device_size != current_br->device_size)
+		goto sdosbend;
+	int part_id = find_part(current_br, 3, 1);
+	if (part_id < 0)
+		goto sdosbend;
+	uint32_t os0_off = current_br->partitions[part_id].off;
+	
+	if (dualos_br->master_mode) { // masterOS->slaveOS
+		LOG("backing up the current BR and os0\n");
+		if (read_real_mmc(emmc, 0, fsp_buf, DOS_BKP_BLOCK_SZ) < 0 || read_real_mmc(emmc, os0_off, gz_buf, DOS_BKP_BLOCK_SZ) < 0)
+			goto sdosbend;
+		dualos_br->master_crc[0] = crc32(0, fsp_buf, DOS_BKP_BLOCK_SZ * 0x200);
+		dualos_br->master_crc[1] = crc32(0, gz_buf, DOS_BKP_BLOCK_SZ * 0x200);
+		if (default_write(dualos_info_off + DOS_MASTER_BKP_START, fsp_buf, DOS_BKP_BLOCK_SZ) < 0
+			|| default_write(dualos_info_off + DOS_MASTER_OS0_START, gz_buf, DOS_BKP_BLOCK_SZ) < 0)
+			goto sdosbend;
+		LOG("updating dualOS superblock\n");
+		dualos_br->master_mode = 0;
+		if (default_write(dualos_info_off, bl_buf, 1) < 0)
+			goto sdosbend;
+		LOG("reading the new BR and os0 (slave)\n");
+		if (read_real_mmc(emmc, dualos_info_off + DOS_SLAVE_BKP_START, fsp_buf, DOS_BKP_BLOCK_SZ) < 0 
+			|| read_real_mmc(emmc, dualos_info_off + DOS_SLAVE_OS0_START, gz_buf, DOS_BKP_BLOCK_SZ) < 0)
+			goto sdosbend;
+		LOG("checking the new BR and os0 (slave)\n");
+		if (cmp_crc32(dualos_br->slave_crc[0], fsp_buf, DOS_BKP_BLOCK_SZ) < 0 || cmp_crc32(dualos_br->slave_crc[1], gz_buf, DOS_BKP_BLOCK_SZ) < 0)
+			goto sdosbend;
+		part_id = find_part(swap_br_0, 3, 1);
+		if (part_id < 0)
+			goto sdosbend;
+		else if (swap_br_0->partitions[part_id].off == 2) {
+			part_id = find_part(swap_br_1, 3, 1);
+			if (part_id < 0)
+				goto sdosbend;
+			os0_off = swap_br_1->partitions[part_id].off;
+		} else
+			os0_off = swap_br_0->partitions[part_id].off;
+		if (os0_off < DOS_BKP_BLOCK_SZ)
+			goto sdosbend;
+		LOG("writing the new BR and os0 (slave)\n");
+		if (default_write(0, fsp_buf, DOS_BKP_BLOCK_SZ) < 0 || default_write(os0_off, gz_buf, DOS_BKP_BLOCK_SZ) < 0)
+			goto sdosbend;
+	} else { // slaveOS->masterOS
+		LOG("backing up the current BR and os0\n");
+		if (read_real_mmc(emmc, 0, fsp_buf, DOS_BKP_BLOCK_SZ) < 0 || read_real_mmc(emmc, os0_off, gz_buf, DOS_BKP_BLOCK_SZ) < 0)
+			goto sdosbend;
+		dualos_br->slave_crc[0] = crc32(0, fsp_buf, DOS_BKP_BLOCK_SZ * 0x200);
+		dualos_br->slave_crc[1] = crc32(0, gz_buf, DOS_BKP_BLOCK_SZ * 0x200);
+		if (default_write(dualos_info_off + DOS_SLAVE_BKP_START, fsp_buf, DOS_BKP_BLOCK_SZ) < 0
+			|| default_write(dualos_info_off + DOS_SLAVE_OS0_START, gz_buf, DOS_BKP_BLOCK_SZ) < 0)
+			goto sdosbend;
+		LOG("updating dualOS superblock\n");
+		dualos_br->master_mode = 1;
+		if (default_write(dualos_info_off, bl_buf, 1) < 0)
+			goto sdosbend;
+		LOG("reading the new BR and os0 (master)\n");
+		if (read_real_mmc(emmc, dualos_info_off + DOS_MASTER_BKP_START, fsp_buf, DOS_BKP_BLOCK_SZ) < 0
+			|| read_real_mmc(emmc, dualos_info_off + DOS_MASTER_OS0_START, gz_buf, DOS_BKP_BLOCK_SZ) < 0)
+			goto sdosbend;
+		LOG("checking the new BR and os0 (master)\n");
+		if (cmp_crc32(dualos_br->master_crc[0], fsp_buf, DOS_BKP_BLOCK_SZ) < 0 || cmp_crc32(dualos_br->master_crc[1], gz_buf, DOS_BKP_BLOCK_SZ) < 0)
+			goto sdosbend;
+		part_id = find_part(swap_br_0, 3, 1);
+		if (part_id < 0)
+			goto sdosbend;
+		else if (swap_br_0->partitions[part_id].off == 2) {
+			part_id = find_part(swap_br_1, 3, 1);
+			if (part_id < 0)
+				goto sdosbend;
+			os0_off = swap_br_1->partitions[part_id].off;
+		} else
+			os0_off = swap_br_0->partitions[part_id].off;
+		if (os0_off < DOS_BKP_BLOCK_SZ)
+			goto sdosbend;
+		LOG("writing the new BR and os0 (master)\n");
+		if (default_write(0, fsp_buf, DOS_BKP_BLOCK_SZ) < 0 || default_write(os0_off, gz_buf, DOS_BKP_BLOCK_SZ) < 0)
+			goto sdosbend;
+	}
+	
+	LOG("all done!\n");
+
+	EXIT_SYSCALL(state);
+	return 0;
+sdosbend:
+	LOG("ERROR!\n");
+	EXIT_SYSCALL(state);
+	return -1;
 }
 
 // misc
