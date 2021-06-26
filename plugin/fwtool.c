@@ -97,7 +97,7 @@ static int personalize_buf(void* bufaddr) {
 }
 
 // cmp crc of first [size] bytes of [buf] with [exp_crc]
-uint32_t cmp_crc32(uint32_t exp_crc, void* buf, uint32_t size) {
+int cmp_crc32(uint32_t exp_crc, void* buf, uint32_t size) {
 	if (skip_int_chk || exp_crc == 0) {
 		LOG("skipping crc checks\n");
 		return 0;
@@ -619,7 +619,7 @@ int fwtool_dualos_swap(void) {
 			|| read_real_mmc(emmc, dualos_info_off + DOS_SLAVE_OS0_START, gz_buf, DOS_BKP_BLOCK_SZ) < 0)
 			goto sdosbend;
 		LOG("checking the new BR and os0 (slave)\n");
-		if (cmp_crc32(dualos_br->slave_crc[0], fsp_buf, DOS_BKP_BLOCK_SZ) < 0 || cmp_crc32(dualos_br->slave_crc[1], gz_buf, DOS_BKP_BLOCK_SZ) < 0)
+		if (cmp_crc32(dualos_br->slave_crc[0], fsp_buf, DOS_BKP_BLOCK_SZ * 0x200) < 0 || cmp_crc32(dualos_br->slave_crc[1], gz_buf, DOS_BKP_BLOCK_SZ * 0x200) < 0)
 			goto sdosbend;
 		part_id = find_part(swap_br_0, 3, 1);
 		if (part_id < 0)
@@ -654,7 +654,7 @@ int fwtool_dualos_swap(void) {
 			|| read_real_mmc(emmc, dualos_info_off + DOS_MASTER_OS0_START, gz_buf, DOS_BKP_BLOCK_SZ) < 0)
 			goto sdosbend;
 		LOG("checking the new BR and os0 (master)\n");
-		if (cmp_crc32(dualos_br->master_crc[0], fsp_buf, DOS_BKP_BLOCK_SZ) < 0 || cmp_crc32(dualos_br->master_crc[1], gz_buf, DOS_BKP_BLOCK_SZ) < 0)
+		if (cmp_crc32(dualos_br->master_crc[0], fsp_buf, DOS_BKP_BLOCK_SZ * 0x200) < 0 || cmp_crc32(dualos_br->master_crc[1], gz_buf, DOS_BKP_BLOCK_SZ * 0x200) < 0)
 			goto sdosbend;
 		part_id = find_part(swap_br_0, 3, 1);
 		if (part_id < 0)
