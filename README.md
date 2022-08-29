@@ -1,24 +1,24 @@
 # psp2fwtool
 Firmware manager for Playstation Vita/TV
 
-## Usage
-### Firmware image
-"Firmware Image" is a container for EMMC partition images as well as the enso exploit.
+## Firmware image
+"Firmware Image" is a container for EMMC partition images, device firmware updates as well as the enso exploit.
+### NPUP
+"NPUP" is a PUP-compliant package containing the Firmware Image, a standalone Firmware Image installer (psp2swu.self) as well as additional partition patches.
 
-### Creating a firmware image
-0. Boot up your linux environment, make sure that you have gzip.
-1. Clone this repository to your local computer and 'make fwtool' in 'psp2fwtool/create/'.
-2. Copy partition images to the /create/ directory with name '[partition name].bin'.
- - enso should be called 'fat.bin' or 'e2x.bin' depending on the enso version you are using.
-3. Run '. fwtool [path] -target [type]', the tool will create a firmware image in [path].
- - [type] is device target id in decimal:
-   - 0-5: internal, devtool, testkit, retail, QA, all
-   - 6: all targets but without SNVS/MBR update (used for "soft" images).
-4. Run '. fwtool [path] -info' and make sure that everything is as expected.
+### Creating a firmware image (Windows + WSL)
+0. Make sure that you have gzip installed in your WSL setup.
+1. Clone this repository to your local computer and run '. build_all.sh' in WSL.
+2. Copy all update components the the /create/ directory in a proper format.
+ - enso as enso.bin
+ - [partition] as [partition].img
+ - decrypted [device] update as [device]-XX.bin, encrypted as [device]-XX.pkg
+3. Run the 'mkcfw_wingui.ps1' powershell script in the /create/ directory
+4. Select all update components, set Firmware Image info and hit "CREATE"
 
 ### Installing the firmware image
 0. Make sure that you have 'Unsafe homebrew' enabled and no game card inserted.
-1. Put the firmware image in 'ux0:data/fwtool/fwimage.bin'.
+1. Put the firmware image in 'ux0:data/fwtool/' as 'psp2cfw'.
 2. The installer can update partitions with files found in 'ux0:data/fwtool/[part]-patch/'.
  - supported [part]itions are: os0, vs0, ur0; ex: 'os0-patch/'.
  - the installer will copy contents of the /[part]-patch/ after flashing the fwimage.
@@ -26,7 +26,19 @@ Firmware manager for Playstation Vita/TV
 4. Wait until the installer finishes with 'ALL DONE' or an error.
 5. Press [circle] to reboot the device.
 
-### Restore point
+### Installing a NPUP package
+ - Install with any modoru version as you would a normal pup
+
+## dualOS
+ - "dualOS" splits the EMMC in half and adds another OS install - "slaveOS".
+ - "masterOS" and "slaveOS" are entirely separate, they can be upgraded/downgraded at will
+ - All partitions are separate, that includes ur0, idstorage, enso etc
+ - Switching between masterOS and slaveOS is very quick and painless
+ - To install dualOS use the "Install dualOS" option in fwtool installer
+ - With dualOS installed there now should be an option to switch between masterOS and slaveOS
+ - Uninstalling dualOS is not recommended but can be done from masterOS via the SELECT menu.
+
+## Restore point
  - "Restore point" is a partial or full EMMC image, it is per-console.
  - The image can be restored at any time and on any supported firmware.
  - The image size is around 4GB for full and 1GB for partial (without ur0/ux0).
@@ -34,11 +46,15 @@ Firmware manager for Playstation Vita/TV
    - 'Create a EMMC image' will create a restore point in 'ux0:data/fwtool/fwrpoint.bin'
    - 'Restore the EMMC image' will flash the restore point from 'ux0:data/fwtool/fwrpoint.bin'
 
+## Additional PC Tools
+ - fstool is a filesystem tool that supports various operations on SCE formatted devices/dumps
+ - mkernie is a syscon update repacker/decryptor/encryptor/cfw-maker
+ - mksbls is a sbls manager (read, edit, create)
+ - mkmbr is a mbr manager (read, edit, create)
+
 ## Notes
- - This tool was written for firmwares 3.60-3.73, all device types.
+ - This tool was written for firmwares 3.60-3.74, all device types.
  - A list of known prebuilt firmware images can be found in nfo.txt
- - This tool currently does not support component updates
-   - It is recommended to not go below firmware 2.10 using fwtool.
- - fwtool has been extensively tested over the past two years, it should not cause any bricks
+ - fwtool has been extensively tested over the past three years, it should not cause any bricks
    - It is recommended to install images that include enso_ex v4+ for extra safety.
 
