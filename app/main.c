@@ -8,45 +8,42 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <malloc.h>
 #include <taihen.h>
 #include <psp2/ctrl.h>
+#include <psp2/power.h>
+#include <psp2/appmgr.h>
 #include <psp2/io/stat.h>
 #include <psp2/io/fcntl.h>
 #include <psp2/io/dirent.h>
+#include <psp2/vshbridge.h>
+#include <psp2/kernel/clib.h>
+#include <psp2/kernel/processmgr.h>
 #include "debugScreen.h"
 #include "../plugin/fwtool.h"
+#include "fwtool_funcs.h"
+
+static int redir_writes = 0, file_logging = 0, skip_int_chk = 0, already_dualos = 0, already_rpoint = 0, uout = 0;
 
 #define DBG(...) sceClibPrintf(__VA_ARGS__);
 
 #define printf(...)                        \
-	do                                     \
-	{                                      \
-		sceClibPrintf(__VA_ARGS__);        \
+	do {                                   \
+		if (uout)						   \
+			sceClibPrintf(__VA_ARGS__);    \
 		psvDebugScreenPrintf(__VA_ARGS__); \
 	} while (0)
 
 #define COLORPRINTF(color, ...)                \
-	do                                         \
-	{                                          \
+	do {                                       \
 		psvDebugScreenSetFgColor(color);       \
-		sceClibPrintf(__VA_ARGS__);            \
+		if (uout)						   	   \
+			sceClibPrintf(__VA_ARGS__);		   \
 		psvDebugScreenPrintf(__VA_ARGS__);     \
 		psvDebugScreenSetFgColor(COLOR_WHITE); \
 	} while (0)
 
-extern int fwtool_read_fwimage(uint32_t offset, uint32_t size, uint32_t crc32, uint32_t unzip);
-extern int fwtool_write_partition(uint32_t offset, uint32_t size, uint8_t partition);
-extern int fwtool_personalize_bl(int fup);
-extern int fwtool_update_mbr(int use_e2x, int swap_bl, int swap_os);
-extern int fwtool_flash_e2x(uint32_t size);
-extern int fwtool_unlink(void);
-extern int fwtool_talku(int cmd, int cmdbuf);
-extern int fwtool_rw_emmcimg(int dump);
-extern int fwtool_dualos_create(void);
-extern int fwtool_dualos_swap(void);
-
-static int redir_writes = 0, file_logging = 0, skip_int_chk = 0, already_dualos = 0, already_rpoint = 0;
-static char src_u[64], check_dos_br[0x200];
+static char src_u[64], check_dos_br[BLOCK_SIZE];
 
 void main_check_stop(uint32_t code) {
 	SceCtrlData pad, pad1;
@@ -72,14 +69,15 @@ void main_check_stop(uint32_t code) {
 	sceKernelDelayThread(200 * 1000);
 }
 
+#include "../plugin/crc32.c"
 #include "fwimg.c"
 #include "rpoint.c"
 #include "dualos.c"
 
 static char *main_opt_str[] = { " -> Flash a firmware image", " -> Create a EMMC image", " -> Install dualOS", " -> Exit" };
 static char *alt_main_opt_str[] = { " -> Flash a firmware image", " -> Restore the EMMC image", " -> Swap masterOS<->slaveOS", " -> Exit" };
-static const char settings_opt_str[5][32] = { " -> Toggle file logging", " -> Toggle wredirect to GC-SD", " -> Toggle integrity checks", " -> Wipe the dualOS superblock", " -> Back" };
-int optct = 4, soptct = 5;
+static const char settings_opt_str[7][32] = { " -> Toggle file logging", " -> Toggle wredirect to GC-SD", " -> Toggle integrity checks", " -> Wipe the dualOS superblock", " -> Force components update", " -> Log app text to stdout", " -> Back" };
+int optct = 4, soptct = 7;
 
 void erroff() {
 	COLORPRINTF(COLOR_RED, "ERR_REQ_OFF\n");
@@ -96,6 +94,7 @@ void erroff() {
 		sceKernelDelayThread(200 * 1000);
 	}
 	sceKernelExitProcess(0);
+	while (1) {};
 }
 
 void agreement() {
@@ -146,18 +145,24 @@ int settings(void) {
 		sceCtrlPeekBufferPositive(0, &pad, 1);
 		if (pad.buttons == SCE_CTRL_CROSS) {
 			if (sel == 0) {
-				file_logging = fwtool_talku(5, 0);
+				file_logging = fwtool_talku(CMD_SET_FILE_LOGGING, 0);
 				COLORPRINTF(COLOR_YELLOW, "FILE LOGGING: %s\n", (file_logging) ? "ENABLED" : "DISABLED");
 			} else if (sel == 1) {
-				redir_writes = fwtool_talku(9, 0);
+				redir_writes = fwtool_talku(CMD_WRITE_REDIRECT, 0);
 				COLORPRINTF(COLOR_YELLOW, "REDIR WRITES: %s\n", (redir_writes) ? "ENABLED" : "DISABLED");
 			} else if (sel == 2) {
-				skip_int_chk = fwtool_talku(17, 0);
+				skip_int_chk = fwtool_talku(CMD_SKIP_CRC, 0);
 				COLORPRINTF(COLOR_YELLOW, "SKIP INT CHK: %s\n", (skip_int_chk) ? "ENABLED" : "DISABLED");
 			} else if (sel == 3) {
-				fwtool_talku(21, 0);
+				fwtool_talku(CMD_WIPE_DUALOS, 0);
 				COLORPRINTF(COLOR_YELLOW, "WIPE_DOS_SECTOR\n");
-			} else if (sel > 3)
+			} else if (sel == 4) {
+				fwtool_talku(CMD_FORCE_DEV_UPDATE, 0);
+				COLORPRINTF(COLOR_YELLOW, "FORCE_DEV_UPDATE\n");
+			} else if (sel == 5) {
+				uout = !uout;
+				COLORPRINTF(COLOR_YELLOW, "STDOUT ALL\n");
+			} else if (sel > 5)
 				return 69;
 			sceKernelDelayThread(0.3 * 1000 * 1000);
 		} else if (pad.buttons == SCE_CTRL_UP) {
@@ -189,7 +194,7 @@ int main(int argc, char* argv[]) {
 	argg.flags = 0;
 	// load fwtool kernel
 	if (taiLoadStartKernelModuleForUser("ux0:app/SKGFWT00L/fwtool.skprx", &argg) < 0) {
-		if (fwtool_talku(16, 0) < 0) {
+		if (fwtool_talku(CMD_GET_LOCK_STATE, 0) < 0) {
 			printf("get_bind_status failed, the kernel module either failed to load or was locked by another process\n");
 			erroff();
 		}
@@ -201,7 +206,7 @@ int main(int argc, char* argv[]) {
 	agreement();
 
 	// get dualOS state
-	if (fwtool_talku(20, (int)check_dos_br) < 0)
+	if (fwtool_talku(CMD_GET_DUALOS_HEADER, (int)check_dos_br) < 0)
 		erroff();
 	if (*(uint32_t*)check_dos_br == DUALOS_MAGIC) {
 		already_dualos = 1;

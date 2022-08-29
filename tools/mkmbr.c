@@ -1,6 +1,6 @@
 /* THIS FILE IS A PART OF PSP2FWTOOL
  *
- * Copyright (C) 2019-2021 skgleba
+ * Copyright (C) 2019-2022 skgleba
  *
  * This software may be modified and distributed under the terms
  * of the MIT license.  See the LICENSE file for details.
@@ -12,32 +12,14 @@
 #include <inttypes.h>
 #include <stdint.h>
 
-#define BLOCK_SIZE 0x200
+#include "../plugin/fwtool.h"
 
-#define CVMB(x) (((x * BLOCK_SIZE) / 1024) / 1024)
-#define MBCV(x) (((x * 1024) * 1024) / BLOCK_SIZE)
-
-#define ARRAYSIZE(x) ((sizeof(x) / sizeof(0 [x])) / ((size_t)(!(sizeof(x) % sizeof(0 [x])))))
+#define CVMB(x) ((x / 2) / 1024)
+#define MBCV(x) ((x * 1024) * 2)
+#define KBCV(x) (x * 2)
 
 const char* part_code(int code) {
-	static char* codes[] = {
-		"empty",
-		"idstorage",
-		"slb2",
-		"os0",
-		"vs0",
-		"vd0",
-		"tm0",
-		"ur0",
-		"ux0",
-		"gro0",
-		"grw0",
-		"ud0",
-		"sa0",
-		"mediaid",
-		"pd0",
-		"unused" };
-	return codes[code];
+	return pcode_str[code];
 }
 
 const char* part_type(int type) {
@@ -51,38 +33,17 @@ const char* part_type(int type) {
 }
 
 typedef struct {
-	uint32_t off;
-	uint32_t sz;
-	uint8_t code;
-	uint8_t type;
-	uint8_t active;
-	uint32_t flags;
-	uint16_t unk;
-} __attribute__((packed)) partition_t;
-
-typedef struct {
 	char prev_unus[9];
 	partition_t partitions[7];
 } __attribute__((packed)) mbr_part_t;
-
-typedef struct {
-	char magic[0x20];
-	uint32_t version;
-	uint32_t device_size;
-	char unk1[0x28];
-	partition_t partitions[0x10];
-	char unk2[0x5e];
-	char unk3[0x10 * 4];
-	uint16_t sig;
-} __attribute__((packed)) master_block_t;
 
 static unsigned char mbr_part[sizeof(mbr_part_t)];
 static unsigned char mbr_full[sizeof(master_block_t)];
 
 const char part_magic[9] = { 0x05, 0x06, 0x00, 0xFF, 0x0F, 0x00, 0x00, 0x00, 0x00 };
-const char mbr_magic[0x20] = "Sony Computer Entertainment Inc.";
+const char mbr_magic[0x20] = SCEMBR_MAGIC;
 
-uint32_t getSz(const char* src) {
+uint32_t mkmbr_getSz(const char* src) {
 	FILE* fp = fopen(src, "rb");
 	if (fp == NULL)
 		return 0;
@@ -139,7 +100,7 @@ int readCheckMbrFull(const char* src) {
 	return memcmp(mbr_full, mbr_magic, 0x20);
 }
 
-int extractPartFromFull(const char* dst) {
+int mkmbr_extractPartFromFull(const char* dst) {
 	FILE* fp = fopen(dst, "wb");
 	if (fp == NULL)
 		return -1;
@@ -177,7 +138,7 @@ int applyMbrFull(const char* dst) {
 	return 0;
 }
 
-int partialMain(int argc, char* argv[]) {
+int mkmbr_partialMain(int argc, char* argv[]) {
 
 	int ret = readCheckMbrPart(argv[1]);
 	if (ret != 0) {
@@ -214,6 +175,9 @@ int partialMain(int argc, char* argv[]) {
 		} else if (strcmp("-size", argv[i]) == 0 && i < argc) {
 			i -= -1;
 			tpart->sz = MBCV((uint32_t)atoi(argv[i]));
+		} else if (strcmp("-ksize", argv[i]) == 0 && i < argc) {
+			i -= -1;
+			tpart->sz = KBCV((uint32_t)atoi(argv[i]));
 		} else if (strcmp("-type", argv[i]) == 0 && i < argc) {
 			i -= -1;
 			tpart->type = (uint8_t)strtoul((argv[i] + 2), NULL, 16);
@@ -239,7 +203,7 @@ int partialMain(int argc, char* argv[]) {
 	return 0;
 }
 
-int fullMain(int argc, char* argv[]) {
+int mkmbr_fullMain(int argc, char* argv[]) {
 
 	int ret = readCheckMbrFull(argv[1]);
 	if (ret != 0) {
@@ -248,7 +212,7 @@ int fullMain(int argc, char* argv[]) {
 	}
 
 	if (strcmp("extract", argv[2]) == 0)
-		return extractPartFromFull(argv[3]);
+		return mkmbr_extractPartFromFull(argv[3]);
 
 	master_block_t* fmbr = (master_block_t*)mbr_full;
 
@@ -304,18 +268,34 @@ int fullMain(int argc, char* argv[]) {
 	return 0;
 }
 
-int main(int argc, char* argv[]) {
+int mkmbr_main(int argc, char* argv[]) {
 
 	if (argc < 4) {
-		printf("\nusage: ./[binname] [scembr] [slot] [opt ..]\n");
+		printf("\nusage: %s [scembr] [slot] [opt ..]\n\n", argv[0]);
+		printf("[scembr] = dumped SCE MBR (512B) or user partition table (128B)\n");
+		printf("[slot] = partition slot number or 'all' to list all slots\n");
+		printf("[opt] = optional args ('h' = hex and 'd' = dec):\n");
+		printf(" '-info' displays [slot] contents\n");
+		printf(" '-clone dX' copies slot 'X' to slot [slot]\n");
+		printf(" '-offset dX' sets [slot]->offset to 'X'\n");
+		printf(" '-size dX' sets [slot]->size to 'X'\n");
+		printf(" '-type hX' sets (u8)[slot]->type to 'X'\n");
+		printf(" '-code hX' sets (u8)[slot]->code to 'X'\n");
+		printf(" '-active dX' sets [slot]->active to 'X'\n");
+		printf(" '-flags hX' sets (u32)[slot]->flags to 'X'\n");
+		printf("\npartition codes:\n");
+		for (int i = 0; i < 16; ++i) {
+			printf(" %s: 0x%X\n", part_code(i), i);
+		}
+		printf("\n'%s scembr.part 3 -clone 1 -code 0x8' - create a ux0 partition in slot 3 that shares its parameters with the one in slot 1 (hybrid)\n", argv[0]);
 		return -1;
 	}
 
-	int ret = (int)getSz(argv[1]);
+	int ret = (int)mkmbr_getSz(argv[1]);
 	if (ret == sizeof(mbr_part_t))
-		ret = partialMain(argc, argv);
+		ret = mkmbr_partialMain(argc, argv);
 	else if (ret == sizeof(master_block_t))
-		ret = fullMain(argc, argv);
+		ret = mkmbr_fullMain(argc, argv);
 	else
 		printf("bad file size - %d\n", ret);
 
@@ -323,3 +303,9 @@ int main(int argc, char* argv[]) {
 
 	return ret;
 }
+
+#ifndef MKMBR_SLAVE
+int main(int argc, char* argv[]) {
+	return main(argc, argv);
+}
+#endif

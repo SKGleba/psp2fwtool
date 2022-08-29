@@ -20,3 +20,5 @@ fwtoolkernel:
         - fwtool_rw_emmcimg
         - fwtool_dualos_create
         - fwtool_dualos_swap
+        - fwtool_check_rvk
+        - fwtool_update_dev

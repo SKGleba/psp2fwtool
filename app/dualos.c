@@ -65,7 +65,7 @@ int install_proxy(void) {
 	psvDebugScreenClear(COLOR_BLACK);
 	printf("FWTOOL::DOSITOOL started\n");
 	
-	int ret = fwtool_talku(19, 0);
+	int ret = fwtool_talku(CMD_SET_PERF_MODE, 0);
 	DBG("set high perf mode: 0x%X\n", ret);
 	
 	dualos_get_pkey(1);
@@ -77,7 +77,7 @@ int install_proxy(void) {
 	
 	ret = fwtool_dualos_create();
 
-	if (ret == 0) {
+	if (!ret) {
 		COLORPRINTF(COLOR_CYAN, "\nALL DONE. ");
 		dualos_get_pkey(0);
 		sceKernelDelayThread(1 * 1000 * 1000);
@@ -97,7 +97,7 @@ int swap_proxy(void) {
 	
 	int ret = swap_full();
 
-	if (ret == 0) {
+	if (!ret) {
 		COLORPRINTF(COLOR_CYAN, "\nALL DONE. ");
 		dualos_get_pkey(0);
 		sceKernelDelayThread(1 * 1000 * 1000);

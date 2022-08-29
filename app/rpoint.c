@@ -44,11 +44,11 @@ int create_full(const char* fwrpoint) {
 	COLORPRINTF(COLOR_RED, FWTOOL_VERSION_STR);
 	COLORPRINTF(COLOR_CYAN, "\n---------STAGE 1: SET_TARGET---------\n\n");
 	main_check_stop(opret);
-	if (fwrpoint == NULL)
-		fwrpoint = "ux0:data/fwtool/fwrpoint.bin";
+	if (!fwrpoint)
+		fwrpoint = "ux0:data/fwtool/" RPOINT_NAME;
 	else {
 		sceClibStrncpy(src_u, fwrpoint, 63);
-		if (fwtool_talku(14, (int)src_u) < 0)
+		if (fwtool_talku(CMD_SET_FWRP_PATH, (int)src_u) < 0)
 			return opret;
 	}
 	printf("New firmware restore point: %s\n", fwrpoint);
@@ -73,11 +73,13 @@ int create_full(const char* fwrpoint) {
 	int fd = sceIoOpen(fwrpoint, SCE_O_RDONLY, 0);
 	int ret = sceIoRead(fd, &img_super, sizeof(emmcimg_super));
 	sceIoClose(fd);
-	if (ret < 0 || img_super.magic != 0xC00F2020)
+	if (ret < 0 || img_super.magic != RPOINT_MAGIC)
 		return opret;
 	printf("getting console id...\n");
-	if (_vshSblAimgrGetConsoleId(&img_super.target) < 0)
+	unsigned char cid_tmp[32];
+	if (_vshSblAimgrGetConsoleId((char *)cid_tmp) < 0)
 		return opret;
+	memcpy(img_super.target, cid_tmp, 16);
 	printf("updating header...\n");
 	fd = sceIoOpen(fwrpoint, SCE_O_WRONLY, 6);
 	ret = sceIoWrite(fd, &img_super, sizeof(emmcimg_super));
@@ -94,11 +96,11 @@ int restore_full(const char* fwrpoint) {
 	COLORPRINTF(COLOR_RED, FWTOOL_VERSION_STR);
 	COLORPRINTF(COLOR_CYAN, "\n---------STAGE 1: SET_SOURCE---------\n\n");
 	main_check_stop(opret);
-	if (fwrpoint == NULL)
-		fwrpoint = "ux0:data/fwtool/fwrpoint.bin";
+	if (!fwrpoint)
+		fwrpoint = "ux0:data/fwtool/" RPOINT_NAME;
 	else {
 		sceClibStrncpy(src_u, fwrpoint, 63);
-		if (fwtool_talku(14, (int)src_u) < 0)
+		if (fwtool_talku(CMD_SET_FWRP_PATH, (int)src_u) < 0)
 			return opret;
 	}
 	printf("Firmware restore point: %s\n", fwrpoint);
@@ -114,12 +116,12 @@ int restore_full(const char* fwrpoint) {
 	int fd = sceIoOpen(fwrpoint, SCE_O_RDONLY, 0);
 	int ret = sceIoRead(fd, &img_super, sizeof(emmcimg_super));
 	sceIoClose(fd);
-	if (ret < 0 || img_super.magic != 0xC00F2020)
+	if (ret < 0 || img_super.magic != RPOINT_MAGIC)
 		return opret;
 	printf("comparing target...\n");
-	char cid[0x10];
+	unsigned char cid[0x10];
 	sceClibMemset(cid, 0, 0x10);
-	if (!skip_int_chk && (_vshSblAimgrGetConsoleId(cid) < 0 || sceClibMemcmp(cid, &img_super.target, 0x10) != 0))
+	if (!skip_int_chk && (_vshSblAimgrGetConsoleId((char *)cid) < 0 || sceClibMemcmp(cid, &img_super.target, 0x10)))
 		return opret;
 
 	opret = 3;
@@ -157,12 +159,12 @@ int create_proxy(void) {
 	psvDebugScreenClear(COLOR_BLACK);
 	printf("FWTOOL::CRTOOL started\n");
 	
-	int ret = fwtool_talku(19, 0);
+	int ret = fwtool_talku(CMD_SET_PERF_MODE, 0);
 	DBG("set high perf mode: 0x%X\n", ret);
 	
 	ret = create_full(NULL);
 
-	if (ret == 0) {
+	if (!ret) {
 		COLORPRINTF(COLOR_CYAN, "\nALL DONE. ");
 		rpoint_get_pkey(0);
 		sceKernelDelayThread(1 * 1000 * 1000);
@@ -180,12 +182,12 @@ int restore_proxy(void) {
 	psvDebugScreenClear(COLOR_BLACK);
 	printf("FWTOOL::RITOOL started\n");
 
-	int ret = fwtool_talku(19, 0);
+	int ret = fwtool_talku(CMD_SET_PERF_MODE, 0);
 	DBG("set high perf mode: 0x%X\n", ret);
 	
 	ret = restore_full(NULL);
 
-	if (ret == 0) {
+	if (!ret) {
 		COLORPRINTF(COLOR_CYAN, "\nALL DONE. ");
 		rpoint_get_pkey(0);
 		sceKernelDelayThread(1 * 1000 * 1000);

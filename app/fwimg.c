@@ -1,6 +1,6 @@
 /* THIS FILE IS A PART OF PSP2FWTOOL
  *
- * Copyright (C) 2019-2021 skgleba
+ * Copyright (C) 2019-2022 skgleba
  *
  * This software may be modified and distributed under the terms
  * of the MIT license.  See the LICENSE file for details.
@@ -11,14 +11,14 @@
 
 void fwimg_get_pkey(int mode) {
 	SceCtrlData pad;
-	COLORPRINTF(COLOR_YELLOW, "Press %s.\n", (mode) ? "\n [START] to flash the fwimage\n [CIRCLE] to exit the installer\n" : "CIRCLE to reboot");
+	COLORPRINTF(COLOR_YELLOW, "Press %s.\n", (mode) ? "\n [START] to install the fwimage\n [CIRCLE] to exit the installer\n" : "CIRCLE to reboot");
 	while (1) {
 		sceCtrlPeekBufferPositive(0, &pad, 1);
 		if (pad.buttons & SCE_CTRL_CIRCLE) {
 			if (mode)
 				sceKernelExitProcess(0);
 			else
-				scePowerRequestColdReset();
+				fwtool_talku(CMD_REBOOT, 0);
 		}
 		if ((pad.buttons & SCE_CTRL_START) && mode == 1)
 			break;
@@ -115,12 +115,15 @@ int copyDir(const char* src_path, const char* dst_path) {
 }
 
 // Install [fwimage] (ux0:data/fwtool/fwimage.bin if NULL)
-int update_default(const char* fwimage, int ud0_pathdir) {
+int update_default(const char* fwimage, int ud0_pathdir, uint32_t fwimg_start_offset) {
 	/*
 		Stage 1 - basic image checks
 		- Errors if no file/no FS_PARTs
 		- Errors if bad magic/version
 		- Errors if bad target
+		- Errors if wrong hardware target
+		- Errors if wrong firmware target
+		- Errors if failed the TOC checksum verify
 		- Asks the user one last time to confirm flash
 	*/
 	int opret = 1;
@@ -128,181 +131,279 @@ int update_default(const char* fwimage, int ud0_pathdir) {
 	COLORPRINTF(COLOR_RED, FWTOOL_VERSION_STR);
 	COLORPRINTF(COLOR_CYAN, "\n---------STAGE 1: FS_INIT---------\n\n");
 	main_check_stop(opret);
-	if (fwimage == NULL)
-		fwimage = "ux0:data/fwtool/fwimage.bin";
+	if (!fwimage)
+		fwimage = "ux0:data/fwtool/" CFWIMG_NAME;
 	else {
 		sceClibStrncpy(src_u, fwimage, 63);
-		if (fwtool_talku(0, (int)src_u) < 0)
+		if (fwtool_talku(CMD_SET_FWIMG_PATH, (int)src_u) < 0)
 			goto err;
 	}
-	printf("Firmware image: %s\n", fwimage);
+	DBG("running pre-install checks\n");
+	printf("Firmware image: %s [0x%X]\n", fwimage, fwimg_start_offset);
 	pkg_toc fwimg_toc;
 	SceUID fd = sceIoOpen(fwimage, SCE_O_RDONLY, 0);
 	if (fd < 0)
 		goto err;
-	int ret = sceIoRead(fd, (void*)&fwimg_toc, sizeof(pkg_toc));
+	int ret = sceIoPread(fd, (void*)&fwimg_toc, sizeof(pkg_toc), fwimg_start_offset);
 	sceIoClose(fd);
-	printf("Image magic: 0x%X exp 0xCAFEBABE\nImage version: %d\n", fwimg_toc.magic, fwimg_toc.version);
-	if (ret < 0 || fwimg_toc.magic != CFWIMG_MAGIC || fwimg_toc.version != 2)
+	DBG("Image magic: 0x%08X exp 0x%08X\nImage version: %d\n", fwimg_toc.magic, CFWIMG_MAGIC, fwimg_toc.version);
+	if (ret < 0 || fwimg_toc.magic != CFWIMG_MAGIC || fwimg_toc.version != CFWIMG_VERSION)
 		goto err;
 	uint8_t target = fwimg_toc.target;
-	if (target > 6)
+	if (target > FWTARGET_SAFE)
 		goto err;
 	printf("Target: %s\n", target_dev[target]);
-	if (!skip_int_chk && !fwtool_talku(6, target) && target < 5)
+	if (!skip_int_chk && !fwtool_talku(CMD_CMP_TARGET, target) && target < FWTARGET_ALL)
 		goto err;
-	printf("FS_PART count: %d\n", fwimg_toc.fs_count);
-	if (fwimg_toc.fs_count == 0)
+	if (fwimg_toc.fw_version) {
+		printf("Firmware: 0x%08X\n", fwimg_toc.fw_version);
+		if (!skip_int_chk && fwtool_check_rvk(FSPART_TYPE_FS, SCEMBR_PART_EMPTY, fwimg_toc.fw_version & -0x100, 0))
+			goto err;
+	}
+	if (fwimg_toc.target_hw_rev) {
+		printf("Hardware: 0x%08X\n", fwimg_toc.target_hw_rev);
+		uint32_t current_hw = fwtool_talku(CMD_GET_HW_REV, 0);
+		if (!skip_int_chk && (current_hw & fwimg_toc.target_hw_mask) != (fwimg_toc.target_hw_rev & fwimg_toc.target_hw_mask))
+			goto err;
+	}
+	DBG("FS_PART count: %d\n", fwimg_toc.fs_count);
+	if (!fwimg_toc.fs_count)
 		goto err;
-	ret = fwtool_talku(19, 0);
+	if (fwimg_toc.build_info[0])
+		printf("Description: %s\n", fwimg_toc.build_info);
+	if (fwimg_toc.toc_crc32) {
+		DBG("verifying TOC checksum\n");
+		uint32_t exp_toc_crc = fwimg_toc.toc_crc32;
+		fwimg_toc.toc_crc32 = 0;
+		uint32_t act_toc_crc = crc32(0, (void*)&fwimg_toc, sizeof(pkg_toc));
+		DBG("TOTOC crc 0x%08X\n", act_toc_crc);
+		unsigned char tmp_toc_buf[sizeof(pkg_fs_etr)];
+		fd = sceIoOpen(fwimage, SCE_O_RDONLY, 0);
+		if (fd < 0)
+			goto err;
+		for (int i = 0; i < fwimg_toc.fs_count; i -= -1) {
+			sceIoPread(fd, tmp_toc_buf, sizeof(pkg_fs_etr), fwimg_start_offset + sizeof(pkg_toc) + (i * sizeof(pkg_fs_etr)));
+			act_toc_crc = crc32(act_toc_crc, tmp_toc_buf, sizeof(pkg_fs_etr));
+		}
+		sceIoClose(fd);
+		if (act_toc_crc != exp_toc_crc) {
+			DBG("checksum mismatch! t: 0x%X | c: 0x%X\n", exp_toc_crc, act_toc_crc);
+			printf("TOC checksum mismatch!\n");
+			goto err;
+		}
+	}
+	ret = fwtool_talku(CMD_SET_PERF_MODE, 0);
 	DBG("set high perf mode: 0x%X\n", ret);
 	fwimg_get_pkey(1);
 
-	int verif_bl = 0;
+	int verif_bl = 0, update_dev = 0;
 	pkg_fs_etr fs_entry;
-	if (target < 6) {
+	if (target < FWTARGET_SAFE) {
 		/*
-			Stage 2 - patched syscon_init()
-			This sets system firmware version to 0xDEADBEEF which makes stage 2 loader use its hardcoded ver
-		*/
-		opret = 2;
-		psvDebugScreenClear(COLOR_BLACK);
-		COLORPRINTF(COLOR_RED, FWTOOL_VERSION_STR);
-		COLORPRINTF(COLOR_CYAN, "\n---------STAGE 2: SC_INIT---------\n\n");
-		main_check_stop(opret);
-		printf("Bypassing firmware checks on stage 2 loader...");
-		if (fwtool_unlink() < 0)
-			goto err;
-
-		/*
-			Stage 3 - Prepare SLSK
+			Stage 2 - Prepare SLSK
 			- Puts SLSK in separate memblock and personalizes them
 			- Compares the ARM KBL fw with console minfw to avoid bricks
 			- Updates the SLSK sha256 in SNVS for the inactive bank
 			> TODO: check bl2 fw instead to allow ARM KBL mods
 		*/
-		opret = 3;
+		opret = 2;
 		psvDebugScreenClear(COLOR_BLACK);
 		COLORPRINTF(COLOR_RED, FWTOOL_VERSION_STR);
-		COLORPRINTF(COLOR_CYAN, "\n---------STAGE 3: PREP_BL---------\n\n");
+		COLORPRINTF(COLOR_CYAN, "\n---------STAGE 2: PREP_BL---------\n\n");
 		main_check_stop(opret);
 		fd = sceIoOpen(fwimage, SCE_O_RDONLY, 0);
-		ret = sceIoPread(fd, &fs_entry, sizeof(pkg_fs_etr), sizeof(pkg_toc) + (fwimg_toc.bl_fs_no * sizeof(pkg_fs_etr)));
+		ret = sceIoPread(fd, &fs_entry, sizeof(pkg_fs_etr), fwimg_start_offset + sizeof(pkg_toc) + (fwimg_toc.bl_fs_no * sizeof(pkg_fs_etr)));
 		sceIoClose(fd);
 		printf("Checking bootloader FS_PART nfo (%d)...\n", fwimg_toc.bl_fs_no);
 		DBG("\nFS_PART[%d] - magic 0x%04X | type %d\n"
 			" READ: size 0x%X | offset 0x%X | ungzip %d\n"
 			" WRITE: size 0x%X | offset 0x%X @ id %d\n"
+			" CHECK: hdr2 0x%X | hdr3 0x%X\n"
 			" PART_CRC32: 0x%08X | skip crc32 checks %d\n",
 			fwimg_toc.bl_fs_no, fs_entry.magic, fs_entry.type,
-			fs_entry.pkg_sz, fs_entry.pkg_off, (fs_entry.pkg_sz < fs_entry.dst_sz),
+			fs_entry.pkg_sz, fwimg_start_offset + fs_entry.pkg_off, (fs_entry.pkg_sz < fs_entry.dst_sz),
 			fs_entry.dst_sz, fs_entry.dst_off, fs_entry.part_id,
+			fs_entry.hdr2, fs_entry.hdr3,
 			fs_entry.crc32, skip_int_chk);
-		if (ret < 0 || fs_entry.magic != 0xAA12)
+		if (ret < 0 || fs_entry.magic != FSPART_MAGIC || fs_entry.part_id > SCEMBR_PART_UNUSED)
 			goto err;
-		if (fs_entry.type == 1) {
+		if (fs_entry.type == FSPART_TYPE_BL) {
 			printf("Reading the new bootloaders...\n");
-			if (fwtool_read_fwimage(fs_entry.pkg_off, fs_entry.pkg_sz, fs_entry.crc32, (fs_entry.pkg_sz == fs_entry.dst_sz) ? 0 : fs_entry.dst_sz) < 0)
+			if (fwtool_read_fwimage(fwimg_start_offset + fs_entry.pkg_off, fs_entry.pkg_sz, fs_entry.crc32, (fs_entry.pkg_sz == fs_entry.dst_sz) ? 0 : fs_entry.dst_sz) < 0)
 				goto err;
 			printf("Personalizing the new bootloaders...\n");
 			if (fwtool_personalize_bl(1) < 0)
 				goto err;
 			printf("Checking the minfwv vs ARM KBL fwv...\n");
-			if (!skip_int_chk && fwtool_talku(18, 0) < 0)
+			if (!skip_int_chk && fwtool_talku(CMD_VALIDATE_KBLFW, 0) < 0)
 				goto err;
 			verif_bl = 1;
 			printf("Updating the SHA256 in SNVS...\n");
-			if (fwtool_talku(11, 0) < 0)
+			if (fwtool_talku(CMD_SET_INACTIVE_BL_SHA256, 0) < 0)
 				goto err;
 		} else {
-			printf("Could not find any bootloader entry!\nContinue anyways?\n");
+			printf("Could not find any bootloader entry!\nSkipping stage 3\n");
 			sceKernelDelayThread(1000 * 1000);
-			fwimg_get_pkey(1);
+		}
+
+		if (verif_bl) {
+			/*
+				Stage 3 - patched syscon_init()
+				This sets system firmware version to 0xDEADBEEF which makes stage 2 loader use its hardcoded ver
+			*/
+			opret = 3;
+			psvDebugScreenClear(COLOR_BLACK);
+			COLORPRINTF(COLOR_RED, FWTOOL_VERSION_STR);
+			COLORPRINTF(COLOR_CYAN, "\n---------STAGE 3: SC_INIT---------\n\n");
+			main_check_stop(opret);
+			printf("Bypassing firmware checks on stage 2 loader...");
+			if (fwtool_unlink() < 0)
+				goto err;
+		}
+
+		/*
+			Stage 4 - flash criticals
+			- Flashes all the critical FS_PARTs to EMMC
+			- Sets update_mbr flags
+		*/
+		opret = 4;
+		psvDebugScreenClear(COLOR_BLACK);
+		COLORPRINTF(COLOR_RED, FWTOOL_VERSION_STR);
+		COLORPRINTF(COLOR_CYAN, "\n------STAGE 4: WRITE_CRIT_FS------\n\n");
+		uint8_t ecount = 0;
+		int swap_os = 0, swap_bl = 0, use_e2x = 0;
+		uint32_t off = sizeof(pkg_toc);
+		while (ecount < fwimg_toc.fs_count) {
+			DBG("getting entry %d (0x%X)\n", ecount, off);
+			main_check_stop(opret);
+			fd = sceIoOpen(fwimage, SCE_O_RDONLY, 0);
+			ret = sceIoPread(fd, &fs_entry, sizeof(pkg_fs_etr), fwimg_start_offset + off);
+			sceIoClose(fd);
+			if (ret < 0 || fs_entry.magic != FSPART_MAGIC || fs_entry.part_id > SCEMBR_PART_UNUSED)
+				goto err;
+			if (fs_entry.type < FSPART_TYPE_DEV) { // make sure its a fs_part
+				if (fs_entry.part_id < SCEMBR_PART_SYSTEM) { // make sure its a critical fs, we write the rest later
+					printf("Installing %s (R", (fs_entry.type == FSPART_TYPE_E2X) ? "e2x" : pcode_str[fs_entry.part_id]);
+					DBG("\nFS_PART[%d] - magic 0x%04X | type %d\n"
+						" READ: size 0x%X | offset 0x%X | ungzip %d\n"
+						" WRITE: size 0x%X | offset 0x%X @ id %d\n"
+						" CHECK: hdr2 0x%X | hdr3 0x%X\n"
+						" PART_CRC32: 0x%08X | skip crc32 checks %d\n",
+						ecount, fs_entry.magic, fs_entry.type,
+						fs_entry.pkg_sz, fwimg_start_offset + fs_entry.pkg_off, (fs_entry.pkg_sz < fs_entry.dst_sz),
+						fs_entry.dst_sz, fs_entry.dst_off, fs_entry.part_id,
+						fs_entry.hdr2, fs_entry.hdr3,
+						fs_entry.crc32, skip_int_chk);
+					if ((fs_entry.hdr2 || fs_entry.hdr3) && fwtool_check_rvk(fs_entry.type, fs_entry.part_id, fs_entry.hdr2, fs_entry.hdr3))
+						goto err;
+					if (fwtool_read_fwimage(fwimg_start_offset + fs_entry.pkg_off, fs_entry.pkg_sz, fs_entry.crc32, (fs_entry.pkg_sz == fs_entry.dst_sz) ? 0 : fs_entry.dst_sz) < 0)
+						goto err;
+					ret = -1;
+					printf("W @ 0x%X)... ", fs_entry.dst_off);
+					if (fs_entry.type == FSPART_TYPE_FS) // default fs
+						ret = fwtool_write_partition(fs_entry.dst_off, fs_entry.dst_sz, fs_entry.part_id);
+					else if (fs_entry.type == FSPART_TYPE_BL && !fs_entry.dst_off && verif_bl) { // slsk
+						if (fwtool_talku(CMD_BL_TO_FSP, 0))
+							ret = fwtool_write_partition(0, fs_entry.dst_sz, SCEMBR_PART_SBLS);
+					} else if (fs_entry.type == FSPART_TYPE_E2X && fs_entry.dst_off == 0x400) // e2x
+						ret = fwtool_flash_e2x(fs_entry.dst_sz);
+					if (ret < 0)
+						goto err;
+					COLORPRINTF(COLOR_YELLOW, "ok!\n");
+					if (fs_entry.type == FSPART_TYPE_FS && fs_entry.part_id == SCEMBR_PART_KERNEL)
+						swap_os = 1;
+					else if (fs_entry.type == FSPART_TYPE_BL)
+						swap_bl = 1;
+					else if (fs_entry.type == FSPART_TYPE_E2X)
+						use_e2x = 1;
+				} else
+					DBG("non-critical target fs, skipping for now\n");
+			} else {
+				update_dev = 1;
+				DBG("device firmware, skipping\n");
+			}
+			ecount -= -1;
+			off -= -sizeof(pkg_fs_etr);
+		}
+
+		if (use_e2x | swap_bl | swap_os) {
+			/*
+				Stage 5 - update the Master Boot Record
+				- Updates the MBR with new offsets
+			*/
+			opret = 5;
+			psvDebugScreenClear(COLOR_BLACK);
+			COLORPRINTF(COLOR_RED, FWTOOL_VERSION_STR);
+			COLORPRINTF(COLOR_CYAN, "\n---------STAGE 5: UPD_MBR---------\n\n");
+			main_check_stop(opret);
+			printf("Swap os0: %d\nSwap slb2: %d\nEnable enso: %d\nUpdating the MBR...\n", swap_os, swap_bl, use_e2x);
+			if (fwtool_update_mbr(use_e2x, swap_bl, swap_os) < 0)
+				goto err;
 		}
 	}
 
 	/*
-		Stage 4 - flash
-		- Flashes all the FS_PARTs to EMMC
+		Stage 6 - flash remains
+		- Flashes all the non-critical FS_PARTs to EMMC
 		- Sets update_mbr flags
 	*/
-	opret = 4;
+	opret = 6;
 	psvDebugScreenClear(COLOR_BLACK);
 	COLORPRINTF(COLOR_RED, FWTOOL_VERSION_STR);
-	COLORPRINTF(COLOR_CYAN, "\n---------STAGE 4: FLASHFS---------\n\n");
-	ret = fwtool_talku(19, 1);
+	COLORPRINTF(COLOR_CYAN, "\n-------STAGE 6: WRITE_NC_FS-------\n\n");
+	ret = fwtool_talku(CMD_SET_PERF_MODE, 1);
 	DBG("set boost mode: 0x%X\n", ret);
 	uint8_t ecount = 0;
-	int swap_os = 0, swap_bl = 0, use_e2x = 0;
 	uint32_t off = sizeof(pkg_toc);
 	while (ecount < fwimg_toc.fs_count) {
 		DBG("getting entry %d (0x%X)\n", ecount, off);
 		main_check_stop(opret);
 		fd = sceIoOpen(fwimage, SCE_O_RDONLY, 0);
-		ret = sceIoPread(fd, &fs_entry, sizeof(pkg_fs_etr), off);
+		ret = sceIoPread(fd, &fs_entry, sizeof(pkg_fs_etr), fwimg_start_offset + off);
 		sceIoClose(fd);
-		if (ret < 0 || fs_entry.magic != 0xAA12)
+		if (ret < 0 || fs_entry.magic != FSPART_MAGIC || fs_entry.part_id > SCEMBR_PART_UNUSED)
 			goto err;
-		printf("Installing %s (R", (fs_entry.type == 2) ? "e2x" : pcode_str[fs_entry.part_id]);
-		DBG("\nFS_PART[%d] - magic 0x%04X | type %d\n"
-			" READ: size 0x%X | offset 0x%X | ungzip %d\n"
-			" WRITE: size 0x%X | offset 0x%X @ id %d\n"
-			" PART_CRC32: 0x%08X | skip crc32 checks %d\n",
-			ecount, fs_entry.magic, fs_entry.type,
-			fs_entry.pkg_sz, fs_entry.pkg_off, (fs_entry.pkg_sz < fs_entry.dst_sz),
-			fs_entry.dst_sz, fs_entry.dst_off, fs_entry.part_id,
-			fs_entry.crc32, skip_int_chk);
-		if (fwtool_read_fwimage(fs_entry.pkg_off, fs_entry.pkg_sz, fs_entry.crc32, (fs_entry.pkg_sz == fs_entry.dst_sz) ? 0 : fs_entry.dst_sz) < 0)
-			goto err;
-		ret = -1;
-		printf("W @ 0x%X)... ", fs_entry.dst_off);
-		if (fs_entry.type == 0) // default fs
-			ret = fwtool_write_partition(fs_entry.dst_off, fs_entry.dst_sz, fs_entry.part_id);
-		else if (fs_entry.type > 0 && target == 6) // skip if the "safe" target
-			ret = 0;
-		else if (fs_entry.type == 1 && fs_entry.dst_off == 0 && verif_bl) { // slsk
-			if (fwtool_talku(7, 0))
-				ret = fwtool_write_partition(0, fs_entry.dst_sz, 2);
-		} else if (fs_entry.type == 2 && fs_entry.dst_off == 0x400) // e2x
-			ret = fwtool_flash_e2x(fs_entry.dst_sz);
-		if (ret < 0)
-			goto err;
-		COLORPRINTF(COLOR_YELLOW, "ok!\n");
-		if (fs_entry.type == 0 && fs_entry.part_id == 3)
-			swap_os = 1;
-		else if (fs_entry.type == 1)
-			swap_bl = 1;
-		if (fs_entry.type == 2)
-			use_e2x = 1;
+		if (fs_entry.type < FSPART_TYPE_DEV) { // make sure its a fs, set update_dev flag if not
+			if (fs_entry.part_id > SCEMBR_PART_KERNEL) { // we flashed the criticals earlier
+				printf("Installing %s (R", pcode_str[fs_entry.part_id]);
+				DBG("\nFS_PART[%d] - magic 0x%04X | type %d\n"
+					" READ: size 0x%X | offset 0x%X | ungzip %d\n"
+					" WRITE: size 0x%X | offset 0x%X @ id %d\n"
+					" CHECK: hdr2 0x%X | hdr3 0x%X\n"
+					" PART_CRC32: 0x%08X | skip crc32 checks %d\n",
+					ecount, fs_entry.magic, fs_entry.type,
+					fs_entry.pkg_sz, fwimg_start_offset + fs_entry.pkg_off, (fs_entry.pkg_sz < fs_entry.dst_sz),
+					fs_entry.dst_sz, fs_entry.dst_off, fs_entry.part_id,
+					fs_entry.hdr2, fs_entry.hdr3,
+					fs_entry.crc32, skip_int_chk);
+				if ((fs_entry.hdr2 || fs_entry.hdr3) && fwtool_check_rvk(fs_entry.type, fs_entry.part_id, fs_entry.hdr2, fs_entry.hdr3))
+					goto err;
+				if (fwtool_read_fwimage(fwimg_start_offset + fs_entry.pkg_off, fs_entry.pkg_sz, fs_entry.crc32, (fs_entry.pkg_sz == fs_entry.dst_sz) ? 0 : fs_entry.dst_sz) < 0)
+					goto err;
+				ret = -1;
+				printf("W @ 0x%X)... ", fs_entry.dst_off);
+				ret = fwtool_write_partition(fs_entry.dst_off, fs_entry.dst_sz, fs_entry.part_id);
+				if (ret < 0)
+					goto err;
+				COLORPRINTF(COLOR_YELLOW, "ok!\n");
+			} else
+				DBG("critical target fs, skipping\n");
+		} else
+			DBG("device firmware, skipping\n");
 		ecount -= -1;
 		off -= -sizeof(pkg_fs_etr);
 	}
 
-	if (target < 6) {
-		/*
-			Stage 5 - update the Master Boot Record
-			- Updates the MBR with new offsets
-		*/
-		opret = 5;
-		psvDebugScreenClear(COLOR_BLACK);
-		COLORPRINTF(COLOR_RED, FWTOOL_VERSION_STR);
-		COLORPRINTF(COLOR_CYAN, "\n---------STAGE 5: UPD_MBR---------\n\n");
-		main_check_stop(opret);
-		printf("Swap os0: %d\nSwap slb2: %d\nEnable enso: %d\nUpdating the MBR...\n", swap_os, swap_bl, use_e2x);
-		if (fwtool_update_mbr(use_e2x, swap_bl, swap_os) < 0)
-			goto err;
-	}
-
 	/*
-		Stage 6 - post-update patches
+		Stage 7 - post-update patches
 		- Removes id.dat and tai config.txt from ux0
 		- Copies contents of *-patch dirs to * partitions
 	*/
 	opret = 0;
 	psvDebugScreenClear(COLOR_BLACK);
 	COLORPRINTF(COLOR_RED, FWTOOL_VERSION_STR);
-	COLORPRINTF(COLOR_CYAN, "\n---------UPDATE FINISHED!---------\n\n");
-	main_check_stop(6);
+	COLORPRINTF(COLOR_CYAN, "\n----FIRMWARE UPDATE FINISHED!-----\n\n");
+	main_check_stop(7);
 	if (redir_writes)
 		goto err;
 	printf("Removing ux0:id.dat... ");
@@ -312,15 +413,69 @@ int update_default(const char* fwimage, int ud0_pathdir) {
 	printf("0x%X\nApplying custom partition patches:\n - os0... ", ret);
 	ret = -1;
 	sceClibMemcpy(src_u, "sdstor0:int-lp-ina-os", sizeof("sdstor0:int-lp-ina-os"));
-	if (fwtool_talku(10, (int)src_u) >= 0)
-		ret = copyDir((ud0_pathdir) ? "ud0:os0-patch" : "ux0:data/fwtool/os0-patch", "grw0:");
+	if (fwtool_talku(CMD_GRW_MOUNT, (int)src_u) >= 0)
+		ret = copyDir((ud0_pathdir) ? "ud0:fwtool/os0-patch" : "ux0:data/fwtool/os0-patch", "grw0:");
 	printf("0x%X\n - vs0... ", ret);
 	ret = -1;
-	if (fwtool_talku(8, 0x300) >= 0)
-		ret = copyDir((ud0_pathdir) ? "ud0:vs0-patch" : "ux0:data/fwtool/vs0-patch", "vs0:");
+	if (fwtool_talku(CMD_UMOUNT, 0x300) >= 0)
+		ret = copyDir((ud0_pathdir) ? "ud0:fwtool/vs0-patch" : "ux0:data/fwtool/vs0-patch", "vs0:");
 	printf("0x%X\n - ur0... ", ret);
-	ret = copyDir((ud0_pathdir) ? "ud0:ur0-patch" : "ux0:data/fwtool/ur0-patch", "ur0:");
+	ret = copyDir((ud0_pathdir) ? "ud0:fwtool/ur0-patch" : "ux0:data/fwtool/ur0-patch", "ur0:");
 	printf("0x%X\n", ret);
+	if (!update_dev || target == FWTARGET_SAFE)
+		goto err;
+
+	/*
+		Stage 8 - update devices
+		- Flashes device FS_PARTs to target components
+	*/
+	opret = 8;
+	psvDebugScreenClear(COLOR_BLACK);
+	COLORPRINTF(COLOR_RED, FWTOOL_VERSION_STR);
+	COLORPRINTF(COLOR_CYAN, "\n--------STAGE 8: DEVFW_UPD--------\n\n");
+	main_check_stop(opret);
+	ecount = 0;
+	off = sizeof(pkg_toc);
+	while (ecount < fwimg_toc.fs_count) {
+		main_check_stop(opret);
+		fd = sceIoOpen(fwimage, SCE_O_RDONLY, 0);
+		ret = sceIoPread(fd, &fs_entry, sizeof(pkg_fs_etr), fwimg_start_offset + off);
+		sceIoClose(fd);
+		if (ret < 0 || fs_entry.magic != FSPART_MAGIC || fs_entry.part_id > SCEMBR_PART_UNUSED)
+			goto err;
+		if (fs_entry.type == FSPART_TYPE_DEV && fs_entry.part_id < DEV_NODEV) {
+			DBG("rvkchecking entry %d (0x%02X(0x%08X, 0x%08X))\n", ecount, fs_entry.part_id, fs_entry.hdr2, fs_entry.hdr3);
+			if (!(fs_entry.hdr2 || fs_entry.hdr3) || !fwtool_check_rvk(fs_entry.type, fs_entry.part_id, fs_entry.hdr2, fs_entry.hdr3)) {
+				printf("Flashing %s (R", dcode_str[fs_entry.part_id]);
+				DBG("\nFS_PART[%d] - magic 0x%04X | type %d\n"
+					" READ: size 0x%X | offset 0x%X | ungzip %d\n"
+					" WRITE: size 0x%X | device %d\n"
+					" CHECK: hdr2 0x%X | hdr3 0x%X\n"
+					" FIRMWARE: 0x%08X\n"
+					" PART_CRC32: 0x%08X | skip crc32 checks %d\n",
+					ecount, fs_entry.magic, fs_entry.type,
+					fs_entry.pkg_sz, fwimg_start_offset + fs_entry.pkg_off, (fs_entry.pkg_sz < fs_entry.dst_sz),
+					fs_entry.dst_sz, fs_entry.part_id,
+					fs_entry.hdr2, fs_entry.hdr3,
+					fs_entry.dst_off,
+					fs_entry.crc32, skip_int_chk);
+				if (fwtool_read_fwimage(fwimg_start_offset + fs_entry.pkg_off, fs_entry.pkg_sz, fs_entry.crc32, (fs_entry.pkg_sz == fs_entry.dst_sz) ? 0 : fs_entry.dst_sz) < 0)
+					goto err;
+				ret = -1;
+				printf("W @ %s)... ", dcode_str[fs_entry.part_id]);
+				printf("MAY TAKE A WHILE... ");
+				ret = fwtool_update_dev(fs_entry.part_id, fs_entry.dst_sz, fs_entry.hdr2, fs_entry.hdr3, fs_entry.dst_off);
+				if (ret < 0)
+					goto err;
+				COLORPRINTF(COLOR_YELLOW, "ok!\n");
+			} else
+				DBG("rvk check failed\n");
+		}
+		ecount -= -1;
+		off -= -sizeof(pkg_fs_etr);
+	}
+	opret = 70;
+
 err:
 	return opret;
 }
@@ -329,15 +484,20 @@ int update_proxy(void) {
 	psvDebugScreenClear(COLOR_BLACK);
 	printf("FWTOOL::FLASHTOOL started\n");
 
-	int ret = update_default(NULL, 0);
-	if (ret == 0) {
+	int ret = update_default(NULL, 0, 0);
+	if (!ret) {
 		COLORPRINTF(COLOR_CYAN, "\nALL DONE. ");
 		fwimg_get_pkey(0);
 		sceKernelDelayThread(1 * 1000 * 1000);
 		sceKernelExitProcess(0);
-	}
-
-	COLORPRINTF(COLOR_RED, "\nERROR AT STAGE %d !\n", ret);
+	} else if (ret == 70) {
+		COLORPRINTF(COLOR_CYAN, "\nALL DONE. REBOOTING");
+		sceKernelDelayThread(3 * 1000 * 1000);
+		fwtool_talku(CMD_REBOOT, 1);
+		sceKernelDelayThread(1 * 1000 * 1000);
+		sceKernelExitProcess(0);
+	} else
+		COLORPRINTF(COLOR_RED, "\nERROR AT STAGE %d !\n", ret);
 	fwimg_get_pkey(0);
 	sceKernelDelayThread(1 * 1000 * 1000);
 	sceKernelExitProcess(0);
