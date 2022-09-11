@@ -16,5 +16,5 @@ extern int fwtool_talku(int cmd, int cmdbuf);
 extern int fwtool_rw_emmcimg(int dump);
 extern int fwtool_dualos_create(void);
 extern int fwtool_dualos_swap(void);
-extern int fwtool_update_dev(int id, uint32_t size, uint32_t hdr2, uint32_t hdr3, uint32_t hdr4);
+extern int fwtool_update_dev(int id, uint32_t size, uint32_t u_hdr_data[3]);
 extern int fwtool_check_rvk(int type, int id, uint32_t hdr2, uint32_t hdr3);

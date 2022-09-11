@@ -785,9 +785,18 @@ rvkchkend:
 	WARNING: this may take a few minutes depending on the target
 	TODO: implement proper callback handling for progress status
 */
-int fwtool_update_dev(int id, uint32_t size, uint32_t hdr2, uint32_t hdr3, uint32_t hdr4) {
+int fwtool_update_dev(int id, uint32_t size, uint32_t u_hdr_data[3]) {
 	int state = 0, opret = -1;
 	ENTER_SYSCALL(state);
+	if (!u_hdr_data)
+		goto updevend;
+	
+	uint32_t hdr_data[3];
+	ksceKernelMemcpyUserToKernel(hdr_data, (uint32_t)u_hdr_data, 12);
+	uint32_t hdr2 = hdr_data[0];
+	uint32_t hdr3 = hdr_data[1];
+	uint32_t hdr4 = hdr_data[2];
+
 	LOG("fwtool_update_dev(%s(0x%X, 0x%X), 0x%X) | checked: %s\n", dcode_str[id], hdr2, hdr3, size, dev_checked[id] ? "yes" : "no");
 	if (!size || size > FSP_BUF_SZ_BYTES || !*(uint32_t*)fsp_buf)
 		goto updevend;

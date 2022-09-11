@@ -17,11 +17,6 @@
 #include "../plugin/fwtool.h"
 #include "../plugin/crc32.c"
 
-const char *npup_pup = "PSP2UPDAT.PUP";
-const char *npup_swu = "psp2swu.self";
-const char *npup_fix = "patches.zip";
-const char* npup_msg = "disclaimer.txt";
-
 #ifdef WINDOWS
 uint32_t pread(int fd, void* buf, size_t count, off_t offset) {
 	lseek(fd, offset, SEEK_SET);
@@ -288,8 +283,8 @@ void read_image(const char* image) {
 	return;
 }
 
-void fwimg2pup(const char* fwimage, const char* updater, const char* addcont, const char* disclaimer, const char* pup, uint32_t pup_fw) {
-	printf("\nGPUP[0x%08X] %s + %s + %s + %s -> %s\n", pup_fw, updater, fwimage, addcont, disclaimer, pup);
+void fwimg2pup(const char* fwimage, const char* updater, const char* addcont_all, const char* addcont_vita, const char* addcont_dolce, const char* disclaimer, const char* pup, uint32_t pup_fw) {
+	printf("\nGPUP[0x%08X] %s + %s + %s + %s + %s + %s -> %s\n", pup_fw, updater, fwimage, addcont_all, addcont_vita, addcont_dolce, disclaimer, pup);
 	
 	npup_hdr head;
 	memset(&head, 0, sizeof(head));
@@ -315,7 +310,7 @@ void fwimg2pup(const char* fwimage, const char* updater, const char* addcont, co
 	
 	// UPDATER INFO
 	head.updater_info.data_length = getSz(updater);
-	head.updater_info.data_offset = sizeof(head) + ALIGN_SECTOR(head.disclaimer_info.data_length);;
+	head.updater_info.data_offset = sizeof(head) + ALIGN_SECTOR(head.disclaimer_info.data_length);
 	head.updater_info.entry_id = 0x200;
 	head.updater_info.unk_0x18 = NPUP_NUNK;
 	
@@ -325,13 +320,25 @@ void fwimg2pup(const char* fwimage, const char* updater, const char* addcont, co
 	head.fwimage_info.entry_id = NPUP_FWIMAGE_ID;
 	head.fwimage_info.unk_0x18 = NPUP_NUNK;
 	
-	// ADDCONT INFO
-	head.addcont_info.data_length = getSz(addcont);
-	head.addcont_info.data_offset = head.fwimage_info.data_offset + ALIGN_SECTOR(head.fwimage_info.data_length);
-	head.addcont_info.entry_id = NPUP_ADDCONT_ID;
-	head.addcont_info.unk_0x18 = NPUP_NUNK;
-	
-	head.package_length = head.addcont_info.data_offset + ALIGN_SECTOR(head.addcont_info.data_length);
+	// ADDCONT INFO (ALL)
+	head.addcont_all_info.data_length = getSz(addcont_all);
+	head.addcont_all_info.data_offset = head.fwimage_info.data_offset + ALIGN_SECTOR(head.fwimage_info.data_length);
+	head.addcont_all_info.entry_id = NPUP_ADDCONT_ALL_ID;
+	head.addcont_all_info.unk_0x18 = NPUP_NUNK;
+
+	// ADDCONT INFO (VITA)
+	head.addcont_vita_info.data_length = getSz(addcont_vita);
+	head.addcont_vita_info.data_offset = head.addcont_all_info.data_offset + ALIGN_SECTOR(head.addcont_all_info.data_length);
+	head.addcont_vita_info.entry_id = NPUP_ADDCONT_VITA_ID;
+	head.addcont_vita_info.unk_0x18 = NPUP_NUNK;
+
+	// ADDCONT INFO (DOLCE)
+	head.addcont_dolce_info.data_length = getSz(addcont_dolce);
+	head.addcont_dolce_info.data_offset = head.addcont_vita_info.data_offset + ALIGN_SECTOR(head.addcont_vita_info.data_length);
+	head.addcont_dolce_info.entry_id = NPUP_ADDCONT_DOLCE_ID;
+	head.addcont_dolce_info.unk_0x18 = NPUP_NUNK;
+
+	head.package_length = head.addcont_dolce_info.data_offset + ALIGN_SECTOR(head.addcont_dolce_info.data_length);
 
 	void* pup_b = malloc(head.package_length);
 	memset(pup_b, 0, head.package_length);
@@ -361,13 +368,29 @@ void fwimg2pup(const char* fwimage, const char* updater, const char* addcont, co
 	} else
 		printf("PUPG: no fwimage (?)\n");
 
-	// ADDCONT
-	fp = fopen(addcont, "rb");
+	// ADDCONT (ALL)
+	fp = fopen(addcont_all, "rb");
 	if (fp) {
-		fread(pup_b + head.addcont_info.data_offset, head.addcont_info.data_length, 1, fp);
+		fread(pup_b + head.addcont_all_info.data_offset, head.addcont_all_info.data_length, 1, fp);
 		fclose(fp);
 	} else
-		printf("PUPG: no patches\n");
+		printf("PUPG: no patches for all targets\n");
+
+	// ADDCONT (VITA)
+	fp = fopen(addcont_vita, "rb");
+	if (fp) {
+		fread(pup_b + head.addcont_vita_info.data_offset, head.addcont_vita_info.data_length, 1, fp);
+		fclose(fp);
+	} else
+		printf("PUPG: no patches for vita\n");
+
+	// ADDCONT (DOLCE)
+	fp = fopen(addcont_dolce, "rb");
+	if (fp) {
+		fread(pup_b + head.addcont_dolce_info.data_offset, head.addcont_dolce_info.data_length, 1, fp);
+		fclose(fp);
+	} else
+		printf("PUPG: no patches for dolce\n");
 
 	// PUP-GEN
 	unlink(pup);
@@ -428,7 +451,7 @@ int main(int argc, char* argv[]) {
 			i = i + 1;
 			pup_fw = (uint32_t)strtoul((argv[i] + 2), NULL, 16);
 			if (!gui && getSz(argv[1])) {
-				fwimg2pup(argv[1], "psp2swu.self", "patches.zip", "pupinfo.txt", "PSP2UPDAT.PUP", pup_fw);
+				fwimg2pup(argv[1], "psp2swu.self", "patches_all.zip", "patches_vita.zip", "patches_dolce.zip", "pupinfo.txt", "PSP2UPDAT.PUP", pup_fw);
 				if (!gui)
 					return 0;
 				while (1) {};
@@ -539,7 +562,7 @@ int main(int argc, char* argv[]) {
 	sync_fwimage(argv[1], &fwimg_toc);
 	
 	if (create_pup)
-		fwimg2pup(argv[1], "psp2swu.self", "patches.zip", "pupinfo.txt", "PSP2UPDAT.PUP", pup_fw);
+		fwimg2pup(argv[1], "psp2swu.self", "patches_all.zip", "patches_vita.zip", "patches_dolce.zip", "pupinfo.txt", "PSP2UPDAT.PUP", pup_fw);
 
 	printf("\nfinished: %s\n", argv[1]);
 	

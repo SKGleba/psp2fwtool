@@ -22,7 +22,7 @@ void fwimg_get_pkey(int mode) {
 		}
 		if ((pad.buttons & SCE_CTRL_START) && mode == 1)
 			break;
-		sceKernelDelayThread(200 * 1000);
+		sceKernelDelayThread(100 * 1000);
 	}
 }
 
@@ -435,6 +435,7 @@ int update_default(const char* fwimage, int ud0_pathdir, uint32_t fwimg_start_of
 	COLORPRINTF(COLOR_CYAN, "\n--------STAGE 8: DEVFW_UPD--------\n\n");
 	main_check_stop(opret);
 	ecount = 0;
+	uint32_t hdr_data[3];
 	off = sizeof(pkg_toc);
 	while (ecount < fwimg_toc.fs_count) {
 		main_check_stop(opret);
@@ -464,7 +465,10 @@ int update_default(const char* fwimage, int ud0_pathdir, uint32_t fwimg_start_of
 				ret = -1;
 				printf("W @ %s)... ", dcode_str[fs_entry.part_id]);
 				printf("MAY TAKE A WHILE... ");
-				ret = fwtool_update_dev(fs_entry.part_id, fs_entry.dst_sz, fs_entry.hdr2, fs_entry.hdr3, fs_entry.dst_off);
+				hdr_data[0] = fs_entry.hdr2;
+				hdr_data[1] = fs_entry.hdr3;
+				hdr_data[2] = fs_entry.dst_off;
+				ret = fwtool_update_dev(fs_entry.part_id, fs_entry.dst_sz, hdr_data);
 				if (ret < 0)
 					goto err;
 				COLORPRINTF(COLOR_YELLOW, "ok!\n");

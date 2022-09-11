@@ -19,7 +19,7 @@
 #define FSP_BUF_SZ_BYTES (FSP_BUF_SZ_BLOCKS * BLOCK_SIZE)
 
 // fwtool------------------------
-#define FWTOOL_VERSION_STR "FWTOOL v1.3.5 by SKGleba"
+#define FWTOOL_VERSION_STR "FWTOOL v1.3.6 by SKGleba"
 #define LOG_LOC "ux0:data/fwtool/log.txt"
 #define FWTOOL_MINFW 0x03600000
 #define FWTOOL_MAXFW 0x03740011
@@ -145,7 +145,9 @@ typedef struct _dualos_super_t dualos_super_t;
 // npup--------------------
 #define NPUP_NUNK 'CFW'
 #define NPUP_FWIMAGE_ID 'IMG'
-#define NPUP_ADDCONT_ID 'ADD'
+#define NPUP_ADDCONT_ALL_ID 'ADA'
+#define NPUP_ADDCONT_VITA_ID 'ADV'
+#define NPUP_ADDCONT_DOLCE_ID 'ADO'
 #define NPUP_PREIMSG_ID 'MSG'
 #define NPUP_VERSION 0xDEADBABE
 #define NPUP_MAGIC 0x0100004655454353
@@ -173,8 +175,10 @@ struct _npup_hdr { // size is 0x400
 	ScePupSegmentInfo disclaimer_info;
 	ScePupSegmentInfo updater_info;
 	ScePupSegmentInfo fwimage_info;
-	ScePupSegmentInfo addcont_info;
-	char padding[0x200 - (0x80 + 0x20 * 5)];
+	ScePupSegmentInfo addcont_all_info;
+	ScePupSegmentInfo addcont_vita_info;
+	ScePupSegmentInfo addcont_dolce_info;
+	char padding[0x200 - (0x80 + 0x20 * 7)];
 	char fw_string_block[0x200];
 } __attribute__((packed));
 typedef struct _npup_hdr npup_hdr;

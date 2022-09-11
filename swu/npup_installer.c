@@ -189,27 +189,98 @@ int main(int argc, char* argv[]) {
         erroff();
     }
 
+    printf("Unpacking the update package...\n");
+    
     rmDir(ADDC_LOC);
-    if (puphdr.addcont_info.data_length) {
-        printf("Unpacking the update package...\n");
-        void* tmpb = calloc(1, (uint32_t)puphdr.addcont_info.data_length);
+    sceIoMkdir(ADDC_LOC, 6);
+    if (puphdr.addcont_all_info.data_length) {
+        void* tmpb = calloc(1, (uint32_t)puphdr.addcont_all_info.data_length);
         if (!tmpb) {
-            printf("could not alloc addcont buf!\n");
+            printf("could not alloc addcont_all buf!\n");
             erroff();
         }
-        sceIoMkdir(ADDC_LOC, 6);
         fd = sceIoOpen(NPUP_LOC, SCE_O_RDONLY, 0);
-        sceIoPread(fd, tmpb, puphdr.addcont_info.data_length, puphdr.addcont_info.data_offset);
+        sceIoPread(fd, tmpb, puphdr.addcont_all_info.data_length, puphdr.addcont_all_info.data_offset);
         sceIoClose(fd);
-        fd = sceIoOpen(ADDC_LOC "addcont.zip", SCE_O_WRONLY | SCE_O_CREAT | SCE_O_TRUNC, 0777);
-        sceIoWrite(fd, tmpb, puphdr.addcont_info.data_length);
+        fd = sceIoOpen(ADDC_LOC "addcont_all.zip", SCE_O_WRONLY | SCE_O_CREAT | SCE_O_TRUNC, 0777);
+        sceIoWrite(fd, tmpb, puphdr.addcont_all_info.data_length);
         sceIoClose(fd);
         free(tmpb);
 
-        if (unzip(ADDC_LOC "addcont.zip", ADDC_LOC) < 0) {
-            printf("could not extract addcont!\n");
+        if (unzip(ADDC_LOC "addcont_all.zip", ADDC_LOC) < 0) {
+            printf("could not extract addcont (ALL)!\n");
             erroff();
         }
+    }
+
+    if (vshSblAimgrIsGenuineDolce()) {
+        if (puphdr.addcont_dolce_info.data_length) {
+            void* tmpb = calloc(1, (uint32_t)puphdr.addcont_dolce_info.data_length);
+            if (!tmpb) {
+                printf("could not alloc addcont_dolce buf!\n");
+                erroff();
+            }
+            fd = sceIoOpen(NPUP_LOC, SCE_O_RDONLY, 0);
+            sceIoPread(fd, tmpb, puphdr.addcont_dolce_info.data_length, puphdr.addcont_dolce_info.data_offset);
+            sceIoClose(fd);
+            fd = sceIoOpen(ADDC_LOC "addcont_dolce.zip", SCE_O_WRONLY | SCE_O_CREAT | SCE_O_TRUNC, 0777);
+            sceIoWrite(fd, tmpb, puphdr.addcont_dolce_info.data_length);
+            sceIoClose(fd);
+            free(tmpb);
+
+            if (unzip(ADDC_LOC "addcont_dolce.zip", ADDC_LOC) < 0) {
+                printf("could not extract addcont (DOLCE)!\n");
+                erroff();
+            }
+        }
+    } else if (puphdr.addcont_vita_info.data_length) {
+        void* tmpb = calloc(1, (uint32_t)puphdr.addcont_vita_info.data_length);
+        if (!tmpb) {
+            printf("could not alloc addcont_vita buf!\n");
+            erroff();
+        }
+        fd = sceIoOpen(NPUP_LOC, SCE_O_RDONLY, 0);
+        sceIoPread(fd, tmpb, puphdr.addcont_vita_info.data_length, puphdr.addcont_vita_info.data_offset);
+        sceIoClose(fd);
+        fd = sceIoOpen(ADDC_LOC "addcont_vita.zip", SCE_O_WRONLY | SCE_O_CREAT | SCE_O_TRUNC, 0777);
+        sceIoWrite(fd, tmpb, puphdr.addcont_vita_info.data_length);
+        sceIoClose(fd);
+        free(tmpb);
+
+        if (unzip(ADDC_LOC "addcont_vita.zip", ADDC_LOC) < 0) {
+            printf("could not extract addcont (VITA)!\n");
+            erroff();
+        }
+    }
+
+    if (puphdr.disclaimer_info.data_length) {
+        void* tmpb = calloc(1, (uint32_t)puphdr.disclaimer_info.data_length);
+        if (!tmpb) {
+            printf("could not alloc disclaimer buf!\n");
+            erroff();
+        }
+        fd = sceIoOpen(NPUP_LOC, SCE_O_RDONLY, 0);
+        sceIoPread(fd, tmpb, puphdr.disclaimer_info.data_length, puphdr.disclaimer_info.data_offset);
+        sceIoClose(fd);
+
+        psvDebugScreenClear(COLOR_BLACK);
+        COLORPRINTF(COLOR_YELLOW, "Disclaimer from the repack author:\n\n");
+        psvDebugScreenSetFgColor(COLOR_WHITE);
+        psvDebugScreenPuts(tmpb);
+        COLORPRINTF(COLOR_YELLOW, "\n\nPress CROSS to accept and continue or CIRCLE to exit\n");
+        SceCtrlData pad;
+        while (1) {
+            sceCtrlPeekBufferPositive(0, &pad, 1);
+            if (pad.buttons & SCE_CTRL_CIRCLE) {
+                free(tmpb);
+                scePowerRequestColdReset();
+                sceKernelExitProcess(0);
+            }
+            if (pad.buttons & SCE_CTRL_CROSS)
+                break;
+            sceKernelDelayThread(100 * 1000);
+        }
+        free(tmpb);
     }
 
     psvDebugScreenClear(COLOR_BLACK);
