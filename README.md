@@ -2,13 +2,14 @@
 Firmware manager for Playstation Vita/TV
 
 ## Current known issues/bugs
- - fwtool_update_dev syscall has 5 args, vita limit is 4 so the last arg (fw_ver) is not passed.
-   - this makes fwtool always attempt to "update" the device firmware
-   - all other checks are intact so no unauthorized write can occur
-   - impact: low - annoyance
  - all pc tools are broken on latest windows 11 insider
    - cause: unknown
    - workaround: use WSL
+   
+## TODO:
+ - a proper readme with function documentation
+ - add missing planned fstool features
+ - (optional) a nicer NPUP gui
 
 ## Firmware image
 "Firmware Image" is a container for EMMC partition images, device firmware updates as well as the enso exploit.
