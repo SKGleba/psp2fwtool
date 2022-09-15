@@ -7,6 +7,7 @@ Firmware manager for Playstation Vita/TV
    - workaround: use WSL
    
 ## TODO:
+ - add a way to set fwtool's special flags from NPUP
  - a proper readme with function documentation
  - add missing planned fstool features
  - (optional) a nicer NPUP gui
