@@ -166,6 +166,31 @@ int update_default(const char* fwimage, int ud0_pathdir, uint32_t fwimg_start_of
 		if (!skip_int_chk && (current_hw & fwimg_toc.target_hw_mask) != (fwimg_toc.target_hw_rev & fwimg_toc.target_hw_mask))
 			goto err;
 	}
+	if (fwimg_toc.target_min_fw) {
+		printf(" - minimum allowed firmware: 0x%08X\n", fwimg_toc.target_min_fw);
+		if (!skip_int_chk && (fwtool_talku(CMD_GET_CURRENT_FWV, 0) < fwimg_toc.target_min_fw))
+			goto err;
+	}
+	if (fwimg_toc.target_max_fw) {
+		printf(" - maximum allowed firmware: 0x%08X\n", fwimg_toc.target_max_fw);
+		if (!skip_int_chk && (fwtool_talku(CMD_GET_CURRENT_FWV, 0) > fwimg_toc.target_max_fw))
+			goto err;
+	}
+	if (fwimg_toc.target_require_enso) {
+		printf(" - enso_ex is required\n");
+		if (!skip_int_chk && !fwtool_talku(CMD_GET_ENSO_STATUS, 0))
+			goto err;
+	}
+	if (fwimg_toc.force_component_update) {
+		printf(" - force component update\n");
+		if (!fwtool_talku(CMD_FORCE_DEV_UPDATE, 0))
+			fwtool_talku(CMD_FORCE_DEV_UPDATE, 0);
+	}
+	if (fwimg_toc.use_file_logging) {
+		printf(" - use file logging\n");
+		if (!fwtool_talku(CMD_SET_FILE_LOGGING, 0))
+			fwtool_talku(CMD_SET_FILE_LOGGING, 0);
+	}
 	DBG("FS_PART count: %d\n", fwimg_toc.fs_count);
 	if (!fwimg_toc.fs_count)
 		goto err;
@@ -282,7 +307,7 @@ int update_default(const char* fwimage, int ud0_pathdir, uint32_t fwimg_start_of
 			if (ret < 0 || fs_entry.magic != FSPART_MAGIC || fs_entry.part_id > SCEMBR_PART_UNUSED)
 				goto err;
 			if (fs_entry.type < FSPART_TYPE_DEV) { // make sure its a fs_part
-				if (fs_entry.part_id < SCEMBR_PART_SYSTEM) { // make sure its a critical fs, we write the rest later
+				if (fs_entry.part_id < SCEMBR_PART_SYSTEM && (fs_entry.part_id != SCEMBR_PART_EMPTY || fs_entry.type == FSPART_TYPE_E2X)) { // make sure its a critical fs, we write the rest later
 					printf("Installing %s (R", (fs_entry.type == FSPART_TYPE_E2X) ? "e2x" : pcode_str[fs_entry.part_id]);
 					DBG("\nFS_PART[%d] - magic 0x%04X | type %d\n"
 						" READ: size 0x%X | offset 0x%X | ungzip %d\n"
@@ -364,8 +389,19 @@ int update_default(const char* fwimage, int ud0_pathdir, uint32_t fwimg_start_of
 		if (ret < 0 || fs_entry.magic != FSPART_MAGIC || fs_entry.part_id > SCEMBR_PART_UNUSED)
 			goto err;
 		if (fs_entry.type < FSPART_TYPE_DEV) { // make sure its a fs, set update_dev flag if not
-			if (fs_entry.part_id > SCEMBR_PART_KERNEL) { // we flashed the criticals earlier
-				printf("Installing %s (R", pcode_str[fs_entry.part_id]);
+			if (fs_entry.part_id > SCEMBR_PART_KERNEL || (fs_entry.part_id == SCEMBR_PART_EMPTY && fs_entry.type != FSPART_TYPE_E2X)) { // we flashed the criticals earlier
+				if (fs_entry.part_id == SCEMBR_PART_EMPTY) {
+					int e2xmisc_known_data = 0;
+					for (int i = 0; i < E2X_MISC_NOTYPE; i++) {
+						if (e2x_misc_type_offsets[i] == fs_entry.dst_off && e2x_misc_type_sizes[i] == fs_entry.dst_sz) {
+							printf("Flashing enso_ex recovery data (R");
+							e2xmisc_known_data = 1;
+						}
+					}
+					if (!e2xmisc_known_data)
+						printf("Attempting to flash unknown raw data (R");
+				} else
+					printf("Installing %s (R", pcode_str[fs_entry.part_id]);
 				DBG("\nFS_PART[%d] - magic 0x%04X | type %d\n"
 					" READ: size 0x%X | offset 0x%X | ungzip %d\n"
 					" WRITE: size 0x%X | offset 0x%X @ id %d\n"

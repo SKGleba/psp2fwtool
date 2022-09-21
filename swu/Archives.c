@@ -44,6 +44,7 @@ extern "C" {
 #include <malloc.h>
 #include <sys/stat.h>
 #include <psp2/io/dirent.h>
+#include <psp2/io/stat.h>
 #include "Archives.h"
 
     /******************************************************************************

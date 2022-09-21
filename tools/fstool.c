@@ -22,6 +22,9 @@
 #include "mkmbr.c"
 
 #ifdef WINDOWS
+int mkdir_proxy(char* path, uint32_t perms) {
+    return mkdir(path);
+}
 uint32_t pread(int fd, void* buf, size_t count, off_t offset) {
     lseek(fd, offset, SEEK_SET);
     return read(fd, buf, count);
@@ -29,6 +32,10 @@ uint32_t pread(int fd, void* buf, size_t count, off_t offset) {
 uint32_t pwrite(int fd, void* buf, size_t count, off_t offset) {
     lseek(fd, offset, SEEK_SET);
     return write(fd, buf, count);
+}
+#else
+int mkdir_proxy(char* path, uint32_t perms) {
+    return mkdir(path, perms);
 }
 #endif
 
@@ -50,31 +57,59 @@ uint8_t partition_name2id(char* partition) {
     return 0;
 }
 
-void unpacker(char* device, char* dest) {
-    mkdir(dest, 0777);
+bool file_exists(char* path) {
+    int fd = open(path, O_RDONLY);
+    if (fd < 0)
+        return 0;
+    close(fd);
+    return 1;
+}
+
+int x_tractor(char* device, char *partition, char* dest, int active, int replace) {
+
+    uint8_t req_id = (partition) ? partition_name2id(partition) : 0;
+
+    if (!req_id && partition) {
+        if (!strcmp("mbr", partition))
+            req_id = 0x20;
+        else if (!strcmp("rpoint_mbr", partition))
+            req_id = 0x21;
+        else if (!strcmp("enso", partition))
+            req_id = 0x22;
+        else if (!strcmp("emumbr", partition))
+            req_id = 0x23;
+    }
+
+    mkdir_proxy(dest, 0777);
 
     char mbr_raw[512];
     memset(mbr_raw, 0, 512);
     master_block_t* mbr = (master_block_t*)mbr_raw;
-    int fp = open(device, O_RDONLY);
+    int fp = open(device, O_RDWR);
     if (fp < 0) {
         printf("could not open %s\n", device);
-        return;
+        return -1;
     }
     pread(fp, mbr_raw, BLOCK_SIZE, 0);
 
-    uint64_t max_size = 0;
+    uint64_t max_size = 0, rpoint_mv = 0;
     if (*(uint32_t*)mbr->magic == RPOINT_MAGIC) {
+        if (replace) {
+            printf("operation not supported on rpoint!\n");
+            close(fp);
+            return -2;
+        }
         max_size = *(uint32_t*)(mbr->magic + 4);
         max_size *= BLOCK_SIZE;
         max_size += sizeof(emmcimg_super);
+        rpoint_mv = sizeof(emmcimg_super);
         pread(fp, mbr_raw, BLOCK_SIZE, sizeof(emmcimg_super));
     }
 
     if (memcmp(mbr->magic, SCEMBR_MAGIC, sizeof(SCEMBR_MAGIC) - 1) != 0) {
         printf("no SCE magic found\n");
         close(fp);
-        return;
+        return -3;
     }
 
     if (!max_size) {
@@ -86,59 +121,304 @@ void unpacker(char* device, char* dest) {
     if (!copybuf) {
         printf("could not alloc\n");
         close(fp);
-        return;
+        return -4;
     }
 
     char dest_path[512];
+
+    if (req_id > 0x10) {
+        if (req_id == 0x21) {
+            if (rpoint_mv) {
+                if (replace) {
+                    snprintf(dest_path, 512, "%s/%s", dest, "rpoint_mbr");
+                    printf("Replacing 0x%08X from %s\n", 0, dest_path);
+                    int fr = open(dest_path, O_RDONLY);
+                    if (fr < 0) {
+                        printf("could not open %s\n", dest_path);
+                        close(fp);
+                        free(copybuf);
+                        return -10;
+                    }
+                    pread(fr, copybuf, rpoint_mv, 0);
+                    pwrite(fp, copybuf, rpoint_mv, 0);
+                    close(fr);
+                } else {
+                    pread(fp, copybuf, rpoint_mv, 0);
+                    snprintf(dest_path, 512, "%s/%s", dest, "rpoint_mbr");
+                    printf("Extracting 0x%08X to %s\n", 0, dest_path);
+                    int fw = open(dest_path, O_WRONLY | O_CREAT | O_TRUNC);
+                    if (fw < 0) {
+                        printf("could not open %s\n", dest_path);
+                        close(fp);
+                        free(copybuf);
+                        return -11;
+                    }
+                    pwrite(fw, copybuf, rpoint_mv, 0);
+                    close(fw);
+                }
+            } else
+                printf("not rpoint!\n");
+        } else if (req_id == 0x22) {
+            if (replace) {
+                snprintf(dest_path, 512, "%s/%s", dest, "enso");
+                printf("Replacing 0x%08X from %s\n", (rpoint_mv + 0x400) / BLOCK_SIZE, dest_path);
+                int fr = open(dest_path, O_RDONLY);
+                if (fr < 0) {
+                    printf("could not open %s\n", dest_path);
+                    close(fp);
+                    free(copybuf);
+                    return -10;
+                }
+                pread(fr, copybuf, E2X_SIZE_BLOCKS * BLOCK_SIZE, 0);
+                pwrite(fp, copybuf, E2X_SIZE_BLOCKS * BLOCK_SIZE, rpoint_mv + 0x400);
+                close(fr);
+            } else {
+                pread(fp, copybuf, E2X_SIZE_BLOCKS* BLOCK_SIZE, rpoint_mv + 0x400);
+                snprintf(dest_path, 512, "%s/%s", dest, "enso");
+                printf("Extracting 0x%08X to %s\n", (rpoint_mv + 0x400) / BLOCK_SIZE, dest_path);
+                int fw = open(dest_path, O_WRONLY | O_CREAT | O_TRUNC);
+                if (fw < 0) {
+                    printf("could not open %s\n", dest_path);
+                    close(fp);
+                    free(copybuf);
+                    return -11;
+                }
+                pwrite(fw, copybuf, E2X_SIZE_BLOCKS * BLOCK_SIZE, 0);
+                close(fw);
+            }
+        } else if (req_id == 0x23) {
+            if (replace) {
+                snprintf(dest_path, 512, "%s/%s", dest, "emumbr");
+                printf("Replacing 0x%08X from %s\n", (rpoint_mv + BLOCK_SIZE) / BLOCK_SIZE, dest_path);
+                int fr = open(dest_path, O_RDONLY);
+                if (fr < 0) {
+                    printf("could not open %s\n", dest_path);
+                    close(fp);
+                    free(copybuf);
+                    return -10;
+                }
+                pread(fr, copybuf, E2X_SIZE_BLOCKS * BLOCK_SIZE, 0);
+                pwrite(fp, copybuf, E2X_SIZE_BLOCKS * BLOCK_SIZE, rpoint_mv + BLOCK_SIZE);
+                close(fr);
+            } else {
+                pread(fp, copybuf, E2X_SIZE_BLOCKS* BLOCK_SIZE, rpoint_mv + BLOCK_SIZE);
+                snprintf(dest_path, 512, "%s/%s", dest, "emumbr");
+                printf("Extracting 0x%08X to %s\n", (rpoint_mv + BLOCK_SIZE) / BLOCK_SIZE, dest_path);
+                int fw = open(dest_path, O_WRONLY | O_CREAT | O_TRUNC);
+                if (fw < 0) {
+                    printf("could not open %s\n", dest_path);
+                    close(fp);
+                    free(copybuf);
+                    return -11;
+                }
+                pwrite(fw, copybuf, E2X_SIZE_BLOCKS * BLOCK_SIZE, 0);
+                close(fw);
+            }
+        } else if (req_id == 0x20) {
+            if (replace) {
+                snprintf(dest_path, 512, "%s/%s", dest, "mbr");
+                printf("Replacing 0x%08X from %s\n", rpoint_mv / BLOCK_SIZE, dest_path);
+                int fr = open(dest_path, O_RDONLY);
+                if (fr < 0) {
+                    printf("could not open %s\n", dest_path);
+                    close(fp);
+                    free(copybuf);
+                    return -10;
+                }
+                pread(fr, copybuf, BLOCK_SIZE, 0);
+                pwrite(fp, copybuf, BLOCK_SIZE, rpoint_mv);
+                close(fr);
+            } else {
+                snprintf(dest_path, 512, "%s/%s", dest, "mbr");
+                printf("Extracting 0x%08X to %s\n", rpoint_mv / BLOCK_SIZE, dest_path);
+                int fw = open(dest_path, O_WRONLY | O_CREAT | O_TRUNC);
+                if (fw < 0) {
+                    printf("could not open %s\n", dest_path);
+                    close(fp);
+                    free(copybuf);
+                    return -11;
+                }
+                pwrite(fw, mbr_raw, BLOCK_SIZE, 0);
+                close(fw);
+            }
+        }
+
+        close(fp);
+        free(copybuf);
+
+        return 0;
+    }
+    
     for (size_t i = 0; i < ARRAYSIZE(mbr->partitions); ++i) {
         partition_t* p = &mbr->partitions[i];
 
         if (!p->code)
             continue;
 
+        if (req_id) {
+            if (p->code != req_id)
+                continue;
+            if (p->active != active)
+                continue;
+        }
+
         uint64_t offset = p->off;
         uint64_t size = p->sz;
         offset *= BLOCK_SIZE;
         size *= BLOCK_SIZE;
+        
+        offset += rpoint_mv;
 
         if (offset + size > max_size)
             continue;
 
         memset(dest_path, 0, 512);
         snprintf(dest_path, 512, "%s/%s-%d", dest, pcode_str[p->code], p->active);
-        printf("Unpacking 0x%08X to %s\n", p->off, dest_path);
-        
-        int fw = open(dest_path, O_WRONLY | O_CREAT | O_TRUNC);
-        if (fw < 0) {
-            printf("could not open %s\n", dest_path);
-            close(fp);
-            free(copybuf);
-            return;
-        }
 
-        uint64_t copied_size = 0;
-        while (copied_size < size) {
-            memset(copybuf, 0, FSP_BUF_SZ_BYTES);
-            if (copied_size + FSP_BUF_SZ_BYTES > size) {
-                pread(fp, copybuf, size - copied_size, copied_size + offset);
-                pwrite(fw, copybuf, size - copied_size, copied_size);
-            } else {
-                pread(fp, copybuf, FSP_BUF_SZ_BYTES, copied_size + offset);
-                pwrite(fw, copybuf, FSP_BUF_SZ_BYTES, copied_size);
+        if (replace) {
+            printf("Replacing 0x%08X from %s\n", p->off, dest_path);
+            
+            int fr = open(dest_path, O_RDONLY);
+            if (fr < 0) {
+                printf("could not open %s\n", dest_path);
+                close(fp);
+                free(copybuf);
+                return -5;
             }
 
-            copied_size -= -FSP_BUF_SZ_BYTES;
-        }
+            uint64_t copied_size = 0;
+            while (copied_size < size) {
+                memset(copybuf, 0, FSP_BUF_SZ_BYTES);
+                if (copied_size + FSP_BUF_SZ_BYTES > size) {
+                    pread(fr, copybuf, size - copied_size, copied_size);
+                    pwrite(fp, copybuf, size - copied_size, copied_size + offset);
+                } else {
+                    pread(fr, copybuf, FSP_BUF_SZ_BYTES, copied_size);
+                    pwrite(fp, copybuf, FSP_BUF_SZ_BYTES, copied_size + offset);
+                }
 
-        close(fw);
+                copied_size -= -FSP_BUF_SZ_BYTES;
+            }
+
+            close(fr);
+        } else {
+            printf("Extracting 0x%08X to %s\n", p->off, dest_path);
+
+            int fw = open(dest_path, O_WRONLY | O_CREAT | O_TRUNC);
+            if (fw < 0) {
+                printf("could not open %s\n", dest_path);
+                close(fp);
+                free(copybuf);
+                return -6;
+            }
+
+            uint64_t copied_size = 0;
+            while (copied_size < size) {
+                memset(copybuf, 0, FSP_BUF_SZ_BYTES);
+                if (copied_size + FSP_BUF_SZ_BYTES > size) {
+                    pread(fp, copybuf, size - copied_size, copied_size + offset);
+                    pwrite(fw, copybuf, size - copied_size, copied_size);
+                } else {
+                    pread(fp, copybuf, FSP_BUF_SZ_BYTES, copied_size + offset);
+                    pwrite(fw, copybuf, FSP_BUF_SZ_BYTES, copied_size);
+                }
+
+                copied_size -= -FSP_BUF_SZ_BYTES;
+            }
+
+            close(fw);
+        }
     }
     
     free(copybuf);
     close(fp);
+
+    return 0;
+}
+
+void y_tractor(char* source_dir, char* dest) {
+    printf("checking the mbr\n");
+    
+    char path_concat[0x200];
+    memset(path_concat, 0, 0x200);
+    snprintf(path_concat, 0x200, "%s/%s", source_dir, "mbr");
+
+    uint8_t mbr_raw[BLOCK_SIZE];
+    memset(mbr_raw, 0, BLOCK_SIZE);
+    int fr = open(path_concat, O_RDONLY);
+    if (fr < 0) {
+        printf("MBR (%s) open failed\n", fr);
+        return;
+    }
+    pread(fr, mbr_raw, BLOCK_SIZE, 0);
+    close(fr);
+
+    master_block_t* mbr = (master_block_t*)mbr_raw;
+    if (memcmp(mbr->magic, SCEMBR_MAGIC, sizeof(SCEMBR_MAGIC) - 1) != 0) {
+        printf("no SCE magic found\n");
+        return;
+    }
+
+    printf("making sure all partition images are there\n");
+    for (size_t i = 0; i < ARRAYSIZE(mbr->partitions); ++i) {
+        partition_t* p = &mbr->partitions[i];
+
+        if (!p->code)
+            continue;
+        
+        memset(path_concat, 0, 0x200);
+        snprintf(path_concat, 0x200, "%s/%s-%d", source_dir, pcode_str[p->code], p->active);
+        
+        if (!file_exists(path_concat)) {
+            printf("source (%s) does not exist\n", path_concat);
+            return;
+        }
+    }
+
+    uint64_t device_size = 0;
+    device_size = mbr->device_size;
+    device_size *= BLOCK_SIZE;
+
+    printf("creating a blank image template of size %llX, please wait...\n", device_size);
+    
+    void* copybuf = calloc(FSP_BUF_SZ_BLOCKS, BLOCK_SIZE);
+    if (!copybuf) {
+        printf("could not alloc\n");
+        return;
+    }
+
+    memcpy(copybuf, mbr_raw, BLOCK_SIZE);
+
+    int fw = open(dest, O_WRONLY | O_CREAT | O_TRUNC);
+    if (fw < 0) {
+        printf("target (%s) open failed\n", fw);
+        free(copybuf);
+        return;
+    }
+
+    uint64_t blanked_size = 0;
+    while (blanked_size < device_size) {
+        pwrite(fw, copybuf, FSP_BUF_SZ_BYTES, blanked_size);
+        blanked_size -= -FSP_BUF_SZ_BYTES;
+    }
+
+    close(fw);
+    free(copybuf);
+
+    printf("template created, adding partitions\n");
+    for (size_t i = 0; i < ARRAYSIZE(mbr->partitions); ++i) {
+        partition_t* p = &mbr->partitions[i];
+
+        if (!p->code)
+            continue;
+
+        if (x_tractor(dest, pcode_str[p->code], source_dir, p->active, 1))
+            printf("failed to add %s-%d(%d)\n", pcode_str[p->code], p->active, p->code);
+    }
 }
 
 void mounter(bool do_mount, char* device, char* dest, char* partition, bool active) {
-    mkdir(dest, 0777);
+    mkdir_proxy(dest, 0777);
     
     uint8_t req_id = 0;
     if (partition)
@@ -177,7 +457,7 @@ void mounter(bool do_mount, char* device, char* dest, char* partition, bool acti
         if (do_mount) {
             printf("Mounting 0x%08X to %s\n", p->off, mount_path);
             
-            mkdir(mount_path, 0777);
+            mkdir_proxy(mount_path, 0777);
 
             uint64_t offset = p->off;
             uint64_t size = p->sz;
@@ -287,9 +567,9 @@ int main(int argc, char* argv[]) {
         printf(" 'umount [dev] [dest] <p> <a>' : umount [dev] partitions from the [dest] directory\n");
 #endif
         printf(" 'unpack [dev] [dest]' : unpack [dev] partitions to the [dest] directory\n");
-        printf(" 'pack [dev] [src]' : pack partitions from the [dest] directory to [dev]\n");
-        printf(" 'extract [dev] [partition] [dest] <active>' : extract [partition] from [dev] to [dest]\n");
-        printf(" 'replace [dev] [partition] [src] <active>' : replace [partition] in [dev] with [src]\n");
+        printf(" 'pack [src] [dev]' : pack partitions from the [src] directory to [dev]\n");
+        printf(" 'extract [dev] [dest] [partition] <active>' : extract [partition] from [dev] to the [dest] directory\n");
+        printf(" 'replace [dev] [src] [partition] <active>' : replace [partition] in [dev] with one from [src] directory\n");
         printf(" 'strip [rpoint] [dev]' : convert fwtool restore point -> raw EMMC image\n");
         printf("supported devices/formats:\n");
         printf(" EMMC device or dump\n");
@@ -297,11 +577,11 @@ int main(int argc, char* argv[]) {
         printf(" Sony MC device or dump\n");
         printf(" FWTOOL restore point (only info/unpack/extract/strip)\n");
         printf("supported partitions:\n");
-        for (int i = 0; i < 16; i++) {
-            if (i == 9) printf("\n");
+        for (int i = 1; i < 16; i++) {
+            if (i == 11) printf("\n");
             printf(" '%s',", pcode_str[i]);
         }
-        printf(" 'mbr', 'rpoint_mbr'\n");
+        printf(" 'mbr', 'rpoint_mbr', 'enso', 'emumbr'\n");
         return -1;
     }
 
@@ -315,8 +595,14 @@ int main(int argc, char* argv[]) {
         mounter(false, argv[2], argv[3], (argc >= 5) ? argv[4] : NULL, (argc == 6) ? true : false);
     else if (strcmp("strip", argv[1]) == 0)
         stripper(argv[2], argv[3]);
+    else if (strcmp("pack", argv[1]) == 0)
+        y_tractor(argv[2], argv[3]);
     else if (strcmp("unpack", argv[1]) == 0)
-        unpacker(argv[2], argv[3]);
+        x_tractor(argv[2], NULL, argv[3], 0, 0);
+    else if (strcmp("extract", argv[1]) == 0)
+        x_tractor(argv[2], argv[4], argv[3], argc > 5, 0);
+    else if (strcmp("replace", argv[1]) == 0)
+        x_tractor(argv[2], argv[4], argv[3], argc > 5, 1);
 
     return 0;
 }

@@ -8,6 +8,9 @@
 
 #include <psp2kern/sblaimgr.h>
 #include <psp2kern/kernel/utils.h>
+#include <vitasdkkern.h>
+
+#include "decl.h"
 
 #include "tai_compat.c"
 #include "fwtool.h"
@@ -116,7 +119,7 @@ int find_part(master_block_t* master, uint8_t part_id, uint8_t active) {
 // get enso install status (0/1)
 int get_enso_state(void) {
 	char sbr_char[BLOCK_SIZE];
-	ksceSdifReadSectorMmc(emmc, 1, sbr_char, 1);
+	sceSdifReadSectorMmc(emmc, 1, sbr_char, 1);
 	if (!memcmp(sbr_char, SCEMBR_MAGIC, 0x20) && !memcmp(mbr, sbr_char, BLOCK_SIZE) && memcmp(mbr, real_mbr, BLOCK_SIZE))
 		return 1;
 	return 0;
@@ -129,7 +132,7 @@ int cmount_part(const char* blkn) {
 	uint32_t iofindmp_off = (fw > 0x03630000) ? 0x182f5 : 0x138c1;
 	if (fw > 0x03680011)
 		iofindmp_off = 0x18735;
-	if (module_get_offset(KERNEL_PID, ksceKernelSearchModuleByName("SceIofilemgr"), 0, iofindmp_off, (uintptr_t*)&sceIoFindMountPoint) < 0 || !sceIoFindMountPoint)
+	if (module_get_offset(KERNEL_PID, sceKernelSearchModuleByName("SceIofilemgr"), 0, iofindmp_off, (uintptr_t*)&sceIoFindMountPoint) < 0 || !sceIoFindMountPoint)
 		return -1;
 	SceIoMountPoint* mountp;
 	mountp = sceIoFindMountPoint(0xA00);
@@ -141,9 +144,9 @@ int cmount_part(const char* blkn) {
 	custom.id = 0xA00;
 	DACR_OFF(mountp->dev = &custom;);
 	LOG("remounting...\n");
-	ksceIoUmount(0xA00, 0, 0, 0);
-	ksceIoUmount(0xA00, 1, 0, 0);
-	return ksceIoMount(0xA00, NULL, 0, 0, 0, 0);
+	sceIoUmount(0xA00, 0, 0, 0);
+	sceIoUmount(0xA00, 1, 0, 0);
+	return sceIoMount(0xA00, NULL, 0, 0, 0, 0);
 }
 
 // set high-perf mode
@@ -153,11 +156,11 @@ int set_perf_mode(int boost) {
 		*perv_clkm = 0xF;
 		*perv_clks = 0x0;
 	} else {
-		kscePowerSetArmClockFrequency(444); // arm hperf
-		kscePowerSetBusClockFrequency(222); // mem
+		scePowerSetArmClockFrequency(444); // arm hperf
+		scePowerSetBusClockFrequency(222); // mem
 		/*
-		*(uint32_t*)(ksceSdifGetSdContextGlobal(0) + 0x2424) = *(uint32_t*)(ksceSdifGetSdContextGlobal(0) + 0x2420) + 0x810137f0;
-		return ksceSdifSetBusClockFrequency(*(uint32_t*)(ksceSdifGetSdContextGlobal(0) + 0x2414), 0); // emmc hspeed mode
+		*(uint32_t*)(sceSdifGetSdContextGlobal(0) + 0x2424) = *(uint32_t*)(sceSdifGetSdContextGlobal(0) + 0x2420) + 0x810137f0;
+		return sceSdifSetBusClockFrequency(*(uint32_t*)(sceSdifGetSdContextGlobal(0) + 0x2414), 0); // emmc hspeed mode
 		*/
 	}
 	return *perv_clkm;
@@ -169,7 +172,7 @@ int update_snvs_sha256(void) {
 	char bl_hash[0x20];
 	int (*snvs_update_bl_sha)(int totrans_p, int totrans_sz, void* buf, int bufsz, int op, int ctx) = NULL;
 	LOG("getting bootloaders sha256...\n");
-	if (ksceSha256Digest(bl_buf, ALIGN_SECTOR(*(int*)(bl_buf + 0x20 + (*(int*)(bl_buf + 0xc) * 0x30 + -0x30) + 4)) + *(int*)(bl_buf + 0x20 + (*(int*)(bl_buf + 0xc) * 0x30 + -0x30)) * BLOCK_SIZE, bl_hash) < 0)
+	if (sceSha256Digest(bl_buf, ALIGN_SECTOR(*(int*)(bl_buf + 0x20 + (*(int*)(bl_buf + 0xc) * 0x30 + -0x30) + 4)) + *(int*)(bl_buf + 0x20 + (*(int*)(bl_buf + 0xc) * 0x30 + -0x30)) * BLOCK_SIZE, bl_hash) < 0)
 		return ret;
 	LOG("%s bl sha256 to SNVS...\n", (redir_writes) ? "SKIP write of" : "WRITING");
 	if (redir_writes)
@@ -188,11 +191,11 @@ int default_write(uint32_t off, void* buf, uint32_t sz) {
 	if (!off && sz > 1 && sz != FSP_BUF_SZ_BLOCKS)
 		return -1;
 	if (redir_writes) {
-		if (ksceSdifWriteSectorSd(ksceSdifGetSdContextPartValidateSd(1), off, buf, sz) < 0)
+		if (sceSdifWriteSectorSd(sceSdifGetSdContextPartValidateSd(1), off, buf, sz) < 0)
 			LOG("BLKWRITE to GC-SD failed but return 0 anyways\n");
 		return 0;
 	}
-	return ksceSdifWriteSectorMmc(emmc, off, buf, sz);
+	return sceSdifWriteSectorMmc(emmc, off, buf, sz);
 }
 
 // personalize bootloaders in fsp buf. set [fup] if should copy from bl buf first
@@ -334,13 +337,13 @@ int fwtool_read_fwimage(uint32_t offset, uint32_t size, uint32_t exp_crc32, uint
 
 	LOG("reading fwimage...\n");
 	SceIoStat stat;
-	int ret = ksceIoGetstat(fwimage, &stat);
+	int ret = sceIoGetstat(fwimage, &stat);
 	if (ret < 0 || stat.st_size < (offset + size))
 		goto rerr;
 
-	int fd = ksceIoOpen(fwimage, SCE_O_RDONLY, 0);
-	ret = ksceIoPread(fd, (unzip) ? gz_buf : fsp_buf, size, offset);
-	ksceIoClose(fd);
+	int fd = sceIoOpen(fwimage, SCE_O_RDONLY, 0);
+	ret = sceIoPread(fd, (unzip) ? gz_buf : fsp_buf, size, offset);
+	sceIoClose(fd);
 	if (ret < 0)
 		goto rerr;
 
@@ -350,7 +353,7 @@ int fwtool_read_fwimage(uint32_t offset, uint32_t size, uint32_t exp_crc32, uint
 
 	LOG("ungzipping...\n");
 	if (unzip)
-		opret = ksceGzipDecompress(fsp_buf, unzip, gz_buf, NULL);
+		opret = sceGzipDecompress(fsp_buf, unzip, gz_buf, NULL);
 	else
 		opret = 0;
 
@@ -362,8 +365,17 @@ rerr:
 
 // default_write [size] bytes from fsp buf to inactive [partition] @ [offset]
 int fwtool_write_partition(uint32_t offset, uint32_t size, uint8_t partition) {
-	if (!size || size > FSP_BUF_SZ_BYTES || (size % BLOCK_SIZE) || (offset % BLOCK_SIZE) || partition == SCEMBR_PART_EMPTY)
+	if (!size || size > FSP_BUF_SZ_BYTES || (size % BLOCK_SIZE) || (offset % BLOCK_SIZE))
 		return -1;
+	if (partition == SCEMBR_PART_EMPTY) {
+		int known_empty = 0;
+		for (int i = 0; i < E2X_MISC_NOTYPE; i++) {
+			if (offset == e2x_misc_type_offsets[i] && size <= e2x_misc_type_sizes[i])
+				known_empty = 1;
+		}
+		if (!known_empty)
+			return -2;
+	}
 	size = size / BLOCK_SIZE;
 	offset = offset / BLOCK_SIZE;
 	int state = 0, opret = -1;
@@ -407,43 +419,43 @@ int fwtool_rw_emmcimg(int dump) {
 		img_super.magic = RPOINT_MAGIC;
 		img_super.size = size;
 		LOG("dumping (0x%X blocks)...\n", size);
-		fd = ksceIoOpen(fwrpoint, SCE_O_WRONLY | SCE_O_TRUNC | SCE_O_CREAT, 6);
-		if (!size || fd < 0 || ksceIoWrite(fd, &img_super, sizeof(emmcimg_super)) < 0)
+		fd = sceIoOpen(fwrpoint, SCE_O_WRONLY | SCE_O_TRUNC | SCE_O_CREAT, 6);
+		if (!size || fd < 0 || sceIoPwrite(fd, &img_super, sizeof(emmcimg_super), 0) < 0)
 			goto exrwend;
 		while ((copied + FSP_BUF_SZ_BLOCKS) <= size) {
-			if (read_real_mmc(emmc, copied, fsp_buf, FSP_BUF_SZ_BLOCKS) < 0 || ksceIoPwrite(fd, fsp_buf, FSP_BUF_SZ_BLOCKS * BLOCK_SIZE, sizeof(emmcimg_super) + (copied * BLOCK_SIZE)) < 0)
+			if (read_real_mmc(emmc, copied, fsp_buf, FSP_BUF_SZ_BLOCKS) < 0 || sceIoPwrite(fd, fsp_buf, FSP_BUF_SZ_BLOCKS * BLOCK_SIZE, sizeof(emmcimg_super) + (copied * BLOCK_SIZE)) < 0)
 				goto exrwend;
 			img_super.blk_crc[crcn] = crc32(0, fsp_buf, FSP_BUF_SZ_BLOCKS * BLOCK_SIZE);
 			crcn -= -1;
 			copied -= -FSP_BUF_SZ_BLOCKS;
 		}
 		if (copied < size && (size - copied) <= FSP_BUF_SZ_BLOCKS) {
-			if (read_real_mmc(emmc, copied, fsp_buf, (size - copied)) < 0 || ksceIoPwrite(fd, fsp_buf, (size - copied) * BLOCK_SIZE, sizeof(emmcimg_super) + (copied * BLOCK_SIZE)) < 0)
+			if (read_real_mmc(emmc, copied, fsp_buf, (size - copied)) < 0 || sceIoPwrite(fd, fsp_buf, (size - copied) * BLOCK_SIZE, sizeof(emmcimg_super) + (copied * BLOCK_SIZE)) < 0)
 				goto exrwend;
 			img_super.blk_crc[crcn] = crc32(0, fsp_buf, (size - copied) * BLOCK_SIZE);
 			copied = size;
 		}
 		img_super.prev_crc = crc32(0, img_super.blk_crc, 0xF7 * 4);
 		LOG("master crc 0x%X\n", img_super.prev_crc);
-		if (!img_super.blk_crc[0] || ksceIoPwrite(fd, &img_super, sizeof(emmcimg_super), 0) < 0)
+		if (!img_super.blk_crc[0] || sceIoPwrite(fd, &img_super, sizeof(emmcimg_super), 0) < 0)
 			goto exrwend;
 	} else {
 		LOG("getting image size...\n");
-		fd = ksceIoOpen(fwrpoint, SCE_O_RDONLY, 0);
-		if (fd < 0 || ksceIoRead(fd, &img_super, sizeof(emmcimg_super)) < 0)
+		fd = sceIoOpen(fwrpoint, SCE_O_RDONLY, 0);
+		if (fd < 0 || sceIoPread(fd, &img_super, sizeof(emmcimg_super), 0) < 0)
 			goto exrwend;
 		size = img_super.size;
 		if (img_super.magic != RPOINT_MAGIC || !size || !img_super.blk_crc[0] || cmp_crc32(img_super.prev_crc, img_super.blk_crc, 0xF7 * 4) < 0)
 			goto exrwend;
 		LOG("restoring (0x%X blocks)...\n", size);
 		while ((copied + FSP_BUF_SZ_BLOCKS) <= size) {
-			if (ksceIoPread(fd, fsp_buf, FSP_BUF_SZ_BLOCKS * BLOCK_SIZE, sizeof(emmcimg_super) + (copied * BLOCK_SIZE)) < 0 || cmp_crc32(img_super.blk_crc[crcn], fsp_buf, FSP_BUF_SZ_BLOCKS * BLOCK_SIZE) < 0 || default_write(copied, fsp_buf, FSP_BUF_SZ_BLOCKS) < 0)
+			if (sceIoPread(fd, fsp_buf, FSP_BUF_SZ_BLOCKS * BLOCK_SIZE, sizeof(emmcimg_super) + (copied * BLOCK_SIZE)) < 0 || cmp_crc32(img_super.blk_crc[crcn], fsp_buf, FSP_BUF_SZ_BLOCKS * BLOCK_SIZE) < 0 || default_write(copied, fsp_buf, FSP_BUF_SZ_BLOCKS) < 0)
 				goto exrwend;
 			crcn -= -1;
 			copied -= -FSP_BUF_SZ_BLOCKS;
 		}
 		if (copied < size && (size - copied) <= FSP_BUF_SZ_BLOCKS) {
-			if (ksceIoPread(fd, fsp_buf, (size - copied) * BLOCK_SIZE, sizeof(emmcimg_super) + (copied * BLOCK_SIZE)) < 0 || cmp_crc32(img_super.blk_crc[crcn], fsp_buf, (size - copied) * BLOCK_SIZE) < 0 || default_write(copied, fsp_buf, (size - copied)) < 0)
+			if (sceIoPread(fd, fsp_buf, (size - copied) * BLOCK_SIZE, sizeof(emmcimg_super) + (copied * BLOCK_SIZE)) < 0 || cmp_crc32(img_super.blk_crc[crcn], fsp_buf, (size - copied) * BLOCK_SIZE) < 0 || default_write(copied, fsp_buf, (size - copied)) < 0)
 				goto exrwend;
 			copied = size;
 		}
@@ -456,7 +468,7 @@ int fwtool_rw_emmcimg(int dump) {
 		opret = 0;
 
 exrwend:
-	ksceIoClose(fd);
+	sceIoClose(fd);
 	LOG("exit call || 0x%X\n", opret);
 	EXIT_SYSCALL(state);
 	return opret;
@@ -708,9 +720,9 @@ int fwtool_check_rvk(int type, int id, uint32_t hdr2, uint32_t hdr3) {
 	uint32_t dev_fw = 0;
 	switch (id) {
 	case DEV_SYSCON_FW:
-	case DEV_SYSCON_UNK:
+	case DEV_SYSCON_CMPMGR:
 	case DEV_SYSCON_DL:
-		module_get_offset(KERNEL_PID, upmgr_ln, 0, (!id) ? 0x75c9 : ((id == DEV_SYSCON_UNK) ? 0x7621 : 0x75f1), (uintptr_t*)&get_dev_fw);
+		module_get_offset(KERNEL_PID, upmgr_ln, 0, (!id) ? 0x75c9 : ((id == DEV_SYSCON_CMPMGR) ? 0x7621 : 0x75f1), (uintptr_t*)&get_dev_fw);
 		module_get_offset(KERNEL_PID, upmgr_ln, 0, 0x7285, (uintptr_t*)&check_dev_compat);
 		if (check_dev_compat && get_dev_fw) {
 			opret = get_dev_fw(&dev_fw);
@@ -792,7 +804,7 @@ int fwtool_update_dev(int id, uint32_t size, uint32_t u_hdr_data[3]) {
 		goto updevend;
 	
 	uint32_t hdr_data[3];
-	ksceKernelMemcpyUserToKernel(hdr_data, (uint32_t)u_hdr_data, 12);
+	sceKernelMemcpyUserToKernel(hdr_data, u_hdr_data, 12);
 	uint32_t hdr2 = hdr_data[0];
 	uint32_t hdr3 = hdr_data[1];
 	uint32_t hdr4 = hdr_data[2];
@@ -818,7 +830,7 @@ int fwtool_update_dev(int id, uint32_t size, uint32_t u_hdr_data[3]) {
 	char fake_callback[0x20];
 	switch (id) {
 	case DEV_SYSCON_FW:
-	case DEV_SYSCON_UNK:
+	case DEV_SYSCON_CMPMGR:
 	case DEV_SYSCON_DL:
 		LOG("checking the ernie firmware header: 0x%X for 0x%X\n", *(uint32_t*)(fsp_buf + 0x4), *(uint32_t*)(fsp_buf + 0x8));
 		if (*(uint8_t*)(fsp_buf + size - 0x18) != 0x20 && *(uint8_t*)(fsp_buf + size - 0x20) != 3)
@@ -893,16 +905,16 @@ int fwtool_talku(int cmd, int cmdbuf) {
 
 	switch (cmd) {
 	case CMD_SET_FWIMG_PATH: // set fwimage path
-		opret = ksceKernelMemcpyUserToKernel(src_k, (uintptr_t)cmdbuf, 64);
+		opret = sceKernelMemcpyUserToKernel(src_k, (void *)cmdbuf, 64);
 		fwimage = src_k;
 		break;
 	case CMD_GET_MBR: // copy x200 from fwtool mbr buf to user buf
 	case CMD_GET_BL: // copy x400000 from fwtool bl buf to user buf
-		opret = (cmd == CMD_GET_MBR) ? ksceKernelMemcpyKernelToUser((uintptr_t)cmdbuf, mbr, BLOCK_SIZE) : ksceKernelMemcpyKernelToUser((uintptr_t)cmdbuf, bl_buf, BL_BUF_SZ_BYTES);
+		opret = (cmd == CMD_GET_MBR) ? sceKernelMemcpyKernelToUser((void*)cmdbuf, mbr, BLOCK_SIZE) : sceKernelMemcpyKernelToUser((void*)cmdbuf, bl_buf, BL_BUF_SZ_BYTES);
 		break;
 	case CMD_GET_GZ: // copy x1000000 from gz buf to user buf
 	case CMD_GET_FSP: // copy x1000000 from fsp buf to user buf
-		opret = ksceKernelMemcpyKernelToUser((uintptr_t)cmdbuf, (cmd == CMD_GET_GZ) ? gz_buf : fsp_buf, FSP_BUF_SZ_BYTES);
+		opret = sceKernelMemcpyKernelToUser((void*)cmdbuf, (cmd == CMD_GET_GZ) ? gz_buf : fsp_buf, FSP_BUF_SZ_BYTES);
 		break;
 	case CMD_SET_FILE_LOGGING: // file debug logs flag
 		enable_f_logging = !enable_f_logging;
@@ -921,9 +933,9 @@ int fwtool_talku(int cmd, int cmdbuf) {
 		cleainv_dcache(fsp_buf, FSP_BUF_SZ_BYTES);
 		break;
 	case CMD_UMOUNT: // unmount partition with id [cmdbuf]
-		ksceIoUmount(cmdbuf, 0, 0, 0);
-		ksceIoUmount(cmdbuf, 1, 0, 0);
-		opret = ksceIoMount(cmdbuf, NULL, 2, 0, 0, 0);
+		sceIoUmount(cmdbuf, 0, 0, 0);
+		sceIoUmount(cmdbuf, 1, 0, 0);
+		opret = sceIoMount(cmdbuf, NULL, 2, 0, 0, 0);
 		break;
 	case CMD_WRITE_REDIRECT: // redirect writes to gc-sd & skip snvs bl sha update flag
 		redir_writes = !redir_writes;
@@ -931,7 +943,7 @@ int fwtool_talku(int cmd, int cmdbuf) {
 		break;
 	case CMD_GRW_MOUNT: // mount custom blkpath as grw0
 		memset(cpart_k, 0, 64);
-		ksceKernelMemcpyUserToKernel(cpart_k, (uintptr_t)cmdbuf, 64);
+		sceKernelMemcpyUserToKernel(cpart_k, (void*)cmdbuf, 64);
 		opret = cmount_part(cpart_k);
 		break;
 	case CMD_SET_INACTIVE_BL_SHA256: // update inactive bl sha256 in SNVS
@@ -947,11 +959,11 @@ int fwtool_talku(int cmd, int cmdbuf) {
 		opret = (*(uint32_t*)bl_buf == SBLS_MAGIC_H) ? 0 : -1;
 		break;
 	case CMD_SET_FWRP_PATH: // set fwrpoint path
-		opret = ksceKernelMemcpyUserToKernel(src_k, (uintptr_t)cmdbuf, 64);
+		opret = sceKernelMemcpyUserToKernel(src_k, (void*)cmdbuf, 64);
 		fwrpoint = src_k;
 		break;
 	case CMD_GET_REAL_MBR: // copy x200 from fwtool real mbr buf to user buf
-		opret = ksceKernelMemcpyKernelToUser((uintptr_t)cmdbuf, real_mbr, BLOCK_SIZE);
+		opret = sceKernelMemcpyKernelToUser((void*)cmdbuf, real_mbr, BLOCK_SIZE);
 		break;
 	case CMD_GET_LOCK_STATE: // get client-lock state
 		opret = (is_locked) ? -1 : 0;
@@ -971,7 +983,7 @@ int fwtool_talku(int cmd, int cmdbuf) {
 		opret = set_perf_mode(cmdbuf);
 		break;
 	case CMD_GET_DUALOS_HEADER: // copy x200 from dualOS boot record to user
-		opret = ksceKernelMemcpyKernelToUser((uintptr_t)cmdbuf, dualos_smallbr, BLOCK_SIZE);
+		opret = sceKernelMemcpyKernelToUser((void*)cmdbuf, dualos_smallbr, BLOCK_SIZE);
 		break;
 	case CMD_WIPE_DUALOS: // wipe the dualOS superblock
 		if (*(uint32_t*)(dualos_smallbr + 12))
@@ -989,14 +1001,17 @@ int fwtool_talku(int cmd, int cmdbuf) {
 		break;
 	case CMD_REBOOT: // reboot | TODO: add some checks & cleanup
 		if (!cmdbuf) // normal reboot
-			kscePowerRequestColdReset();
+			scePowerRequestColdReset();
 		else if (cmdbuf == 1) // ernie reboot (watchdog)
-			kscePowerRequestErnieShutdown(1);
+			scePowerRequestErnieShutdown(1);
 		else if (cmdbuf == 2) // ernie reboot (only pre-system)
-			ksceSysconErnieShutdown(1);
+			sceSysconErnieShutdown(1);
 		else if (cmdbuf == 3) // abby reset (only pre-system)
-			ksceSysconBatterySWReset();
+			sceSysconBatterySWReset();
 		opret = 0;
+		break;
+	case CMD_GET_CURRENT_FWV: // get current firmware version
+			opret = fw;
 		break;
 	default:
 		break;
@@ -1013,14 +1028,14 @@ int module_start(SceSize argc, const void* args) {
 	LOG("initializing the patch ss...\n");
 	if (tai_init() < 0)
 		return SCE_KERNEL_START_FAILED;
-	upmgr_ln = ksceKernelSearchModuleByName("SceSblUpdateMgr");
+	upmgr_ln = sceKernelSearchModuleByName("SceSblUpdateMgr");
 	if (upmgr_ln < 0)
 		return SCE_KERNEL_START_FAILED;
 
 	LOG("reserving 16+16 MiB cached & 4 MiB uncached...\n");
-	ksceKernelGetMemBlockBase(ksceKernelAllocMemBlock("fsw_p", MB_K_DEF | MB_I_BK | MB_C_Y | MB_A_RW, FSP_BUF_SZ_BYTES, NULL), (void**)&fsp_buf);
-	ksceKernelGetMemBlockBase(ksceKernelAllocMemBlock("gz_p", MB_K_DEF | MB_I_BK | MB_C_Y | MB_A_RW, FSP_BUF_SZ_BYTES, NULL), (void**)&gz_buf);
-	ksceKernelGetMemBlockBase(ksceKernelAllocMemBlock("bl_p", MB_K_DEF | MB_I_BK | MB_C_N | MB_A_RW, BL_BUF_SZ_BYTES, NULL), (void**)&bl_buf);
+	sceKernelGetMemBlockBase(sceKernelAllocMemBlock("fsw_p", MB_K_DEF | MB_I_BK | MB_C_Y | MB_A_RW, FSP_BUF_SZ_BYTES, NULL), (void**)&fsp_buf);
+	sceKernelGetMemBlockBase(sceKernelAllocMemBlock("gz_p", MB_K_DEF | MB_I_BK | MB_C_Y | MB_A_RW, FSP_BUF_SZ_BYTES, NULL), (void**)&gz_buf);
+	sceKernelGetMemBlockBase(sceKernelAllocMemBlock("bl_p", MB_K_DEF | MB_I_BK | MB_C_N | MB_A_RW, BL_BUF_SZ_BYTES, NULL), (void**)&bl_buf);
 	if (!fsp_buf || !gz_buf || !bl_buf)
 		return SCE_KERNEL_START_FAILED;
 
@@ -1031,15 +1046,15 @@ int module_start(SceSize argc, const void* args) {
 	fwrpoint = "ux0:data/fwtool/" RPOINT_NAME;
 
 	LOG("getting console info...\n");
-	fw = *(uint32_t*)(*(int*)(ksceSysrootGetSysroot() + 0x6c) + 4);
-	minfw = *(uint32_t*)(*(int*)(ksceSysrootGetSysroot() + 0x6c) + 8);
-	hw_rev = ksceSysconGetHardwareInfo();
-	cur_dev = ksceSblAimgrIsTest() ? FWTARGET_SYSDBG : (ksceSblAimgrIsTool() ? FWTARGET_DEVKIT : (ksceSblAimgrIsDEX() ? FWTARGET_TESTKIT : (ksceSblAimgrIsCEX() ? FWTARGET_RETAIL : FWTARGET_QASETTLE)));
-	emmc = ksceSdifGetSdContextPartValidateMmc(0);
-	if (!emmc || module_get_offset(KERNEL_PID, ksceKernelSearchModuleByName("SceSdif"), 0, 0x3e7d, (uintptr_t*)&read_real_mmc) < 0 || !read_real_mmc)
+	fw = *(uint32_t*)(*(int*)(sceSysrootGetSysrootBase() + 0x6c) + 4);
+	minfw = *(uint32_t*)(*(int*)(sceSysrootGetSysrootBase() + 0x6c) + 8);
+	hw_rev = sceSysconGetHardwareInfo();
+	cur_dev = sceSblAimgrIsTest() ? FWTARGET_EMU : (sceSblAimgrIsTool() ? FWTARGET_DEVTOOL : (sceSblAimgrIsDEX() ? FWTARGET_TESTKIT : (sceSblAimgrIsCEX() ? FWTARGET_RETAIL : FWTARGET_UNKNOWN)));
+	emmc = sceSdifGetSdContextPartValidateMmc(0);
+	if (!emmc || module_get_offset(KERNEL_PID, sceKernelSearchModuleByName("SceSdif"), 0, 0x3e7d, (uintptr_t*)&read_real_mmc) < 0 || !read_real_mmc)
 		return SCE_KERNEL_START_FAILED;
-	if (ksceSdifReadSectorMmc(emmc, 0, mbr, 1) < 0 // read currently used MBR
-		|| ksceSdifReadSectorMmc(emmc, 2, fsp_buf, E2X_SIZE_BLOCKS) < 0 // read enso area
+	if (sceSdifReadSectorMmc(emmc, 0, mbr, 1) < 0 // read currently used MBR
+		|| sceSdifReadSectorMmc(emmc, 2, fsp_buf, E2X_SIZE_BLOCKS) < 0 // read enso area
 		|| read_real_mmc(emmc, 0, real_mbr, 1) < 0 // read the real MBR
 		|| read_real_mmc(emmc, *(uint32_t*)(real_mbr + 0x24) - DOS_RESERVED_SZ, dualos_smallbr, 1) < 0) // read dualOS boot record
 		return SCE_KERNEL_START_FAILED;

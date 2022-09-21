@@ -1,0 +1,93 @@
+modules:
+  custom:
+    libraries:
+      SceThreadmgrForDriver:
+        kernel: true
+        nid: 0xE2C40624
+        functions:
+          sceKernelCreateThread: 0xC6674E7D
+          sceKernelStartThread: 0x21F5419B
+          sceKernelWaitThreadEnd: 0x3E20216F
+          sceKernelDeleteThread: 0xAC834F3F
+      SceSysconForDriver:
+        kernel: true
+        nid: 0x60A35F64
+        functions:
+          sceSysconGetHardwareInfo: 0xCBD6D8BC
+          sceSysconErnieShutdown: 0x94AB13CC
+          sceSysconBatterySWReset: 0x87DA378D
+      SceIofilemgrForDriver:
+        kernel: true
+        nid: 0x40FD29C7
+        functions:
+          sceIoClose: 0xF99DD8A3
+          sceIoOpen: 0x75192972
+          sceIoPread: 0x2A17515D
+          sceIoPwrite: 0x5F1512C8
+          sceIoMount: 0xD070BC48
+          sceIoUmount: 0x20574100
+          sceIoGetstat: 0x75C96D25
+          sceIoWrite: 0x21EE91F0
+      SceSdifForDriver:
+        kernel: true
+        nid: 0x96D306FA
+        functions:
+          sceSdifReadSectorMmc: 0x6F8D529B
+          sceSdifWriteSectorMmc: 0x175543D2
+          sceSdifWriteSectorSd: 0xE0781171
+          sceSdifGetSdContextPartValidateMmc: 0x6A71987F
+          sceSdifGetSdContextPartValidateSd: 0xB9EA5B1E
+      SceModulemgrForDriver:
+        kernel: true
+        nid: 0xD4A60A52
+        functions:
+          sceKernelSearchModuleByName: 0xBBE1771C
+      ScePowerForDriver:
+        kernel: true
+        nid: 0x1590166F
+        functions:
+          scePowerRequestErnieShutdown: 0x8921A7A0
+          scePowerRequestColdReset: 0x0442D852
+          scePowerSetArmClockFrequency: 0x74DB5AE5
+          scePowerSetBusClockFrequency: 0xB8D7B3FB
+      SceDebugForDriver:
+        kernel: true
+        nid: 0x88758561
+        functions:
+          sceDebugPrintf: 0x391B74B7
+      SceKernelUtilsForDriver:
+        kernel: true
+        nid: 0x496AD8B4
+        functions:
+          sceSha256Digest: 0xA773A6A8
+          sceGzipDecompress: 0x367EE3DF
+      SceSblAIMgrForDriver:
+        kernel: true
+        nid: 0xFD00C69A
+        functions:
+          sceSblAimgrIsCEX: 0xD78B04A2
+          sceSblAimgrIsDEX: 0xF4B98F66
+          sceSblAimgrIsTest: 0x3B638885
+          sceSblAimgrIsTool: 0x274663A0
+      SceSysclibForDriver:
+        kernel: true
+        nid: 0x7EE45391
+        functions:
+          memcmp: 0xF939E83D
+          memcpy: 0x40C88316
+          memset: 0x0AB9BF5C
+          snprintf: 0xAE7A8981
+          strnlen: 0xCD4BD884
+      SceSysmemForDriver:
+        kernel: true
+        nid: 0x6F25E18A
+        functions:
+          sceKernelAllocMemBlock: 0xC94850C9
+          sceKernelGetMemBlockBase: 0xA841EDDA
+          sceKernelMemcpyUserToKernel: 0xBC996A7A
+          sceKernelMemcpyKernelToUser: 0x6D88EF8A
+      SceSysrootForKernel:
+        kernel: true
+        nid: 0x3691DA45
+        functions:
+          sceSysrootGetSysrootBase: 0x3E455842

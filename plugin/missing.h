@@ -6,18 +6,6 @@
  * of the MIT license.  See the LICENSE file for details.
  */
 
-extern int ksceSdifReadSectorMmc(int devictx, uint32_t sector, void* buffer, uint32_t count);
-extern int ksceSdifWriteSectorMmc(int devictx, uint32_t sector, void* buffer, uint32_t count);
-extern int ksceSdifReadSectorSd(int devictx, uint32_t sector, void* buffer, uint32_t count);
-extern int ksceSdifWriteSectorSd(int devictx, uint32_t sector, void* buffer, uint32_t count);
-extern int ksceSdifGetSdContextPartValidateMmc(int device);
-extern int ksceSdifGetSdContextPartValidateSd(int device);
-extern void* ksceSysrootGetSysbase(void);
-extern int ksceSysconAbbySync(int* status);
-extern int ksceSysconErnieShutdown(int mode);
-extern int ksceSysconBatterySWReset(void);
-extern int kscePowerRequestErnieShutdown(int mode);
-
 typedef struct {
     const char* dev;
     const char* dev2;

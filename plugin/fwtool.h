@@ -19,8 +19,8 @@
 #define FSP_BUF_SZ_BYTES (FSP_BUF_SZ_BLOCKS * BLOCK_SIZE)
 
 // fwtool------------------------
-#define FWTOOL_VERSION_STR "FWTOOL v1.3.6 by SKGleba"
-#define LOG_LOC "ux0:data/fwtool/log.txt"
+#define FWTOOL_VERSION_STR "FWTOOL v1.4.0 by SKGleba"
+#define LOG_LOC "ux0:data/fwtool.log"
 #define FWTOOL_MINFW 0x03600000
 #define FWTOOL_MAXFW 0x03740011
 
@@ -49,21 +49,22 @@ enum FWTOOL_MINI_COMMANDS {
 	CMD_WIPE_DUALOS,
 	CMD_GET_HW_REV,
 	CMD_FORCE_DEV_UPDATE,
-	CMD_REBOOT
+	CMD_REBOOT,
+	CMD_GET_CURRENT_FWV
 };
 
 // fwimage---------------------
 #define CFWIMG_NAME "psp2cfw"
 #define CFWIMG_MAGIC 0xCAFEBABE
-#define CFWIMG_VERSION 3
+#define CFWIMG_VERSION 4
 #define FSPART_MAGIC 0xAA12
 enum FSPART_TYPES { FSPART_TYPE_FS, FSPART_TYPE_BL, FSPART_TYPE_E2X, FSPART_TYPE_DEV };
-enum FWTARGETS { FWTARGET_SYSDBG, FWTARGET_DEVKIT, FWTARGET_TESTKIT, FWTARGET_RETAIL, FWTARGET_QASETTLE, FWTARGET_ALL, FWTARGET_SAFE };
-static char* target_dev[] = { "TEST", "DEVTOOL", "DEX", "CEX", "QA", "ALL", "NOCHK" };
+enum FWTARGETS { FWTARGET_EMU, FWTARGET_DEVTOOL, FWTARGET_TESTKIT, FWTARGET_RETAIL, FWTARGET_UNKNOWN, FWTARGET_ALL, FWTARGET_SAFE };
+static char* target_dev[] = { "TEST", "DEVTOOL", "DEX", "CEX", "UNKQA", "ALL", "NOCHK" };
 enum DEVICE_COMPONENTS {
 	DEV_SYSCON_FW, // ernie firmware
 	DEV_RESERVED, // --ignore--
-	DEV_SYSCON_UNK, // unknown, devkit-related ernie component
+	DEV_SYSCON_CMPMGR, // ernie CP manager
 	DEV_SYSCON_DL, // ernie downloader/updater
 	DEV_MOTION0, // berkley type 0 firmware
 	DEV_MOTION1, // berkley type 1 firmware
@@ -75,7 +76,7 @@ enum DEVICE_COMPONENTS {
 	DEV_COM, // BBMC / 3g module; Zoe?
 	DEV_NODEV
 };
-static char* dcode_str[] = { "syscon_fw", "reserved", "syscon_unk", "syscon_dl", "motion0", "motion1", "cp", "bic_fw", "bic_df", "touch_fw", "touch_cfg", "com", "invalid" };
+static char* dcode_str[] = { "syscon_fw", "reserved", "syscon_cpmgr", "syscon_dl", "motion0", "motion1", "cp", "bic_fw", "bic_df", "touch_fw", "touch_cfg", "com", "invalid" };
 
 struct _pkg_fs_etr {
 	uint16_t magic;
@@ -97,13 +98,29 @@ struct _pkg_toc {
 	uint8_t target;
 	uint8_t fs_count;
 	uint8_t bl_fs_no;
+	uint8_t force_component_update;
+	uint8_t unused;
+	uint8_t target_require_enso;
+	uint8_t use_file_logging;
 	uint32_t target_hw_rev;
 	uint32_t target_hw_mask;
+	uint32_t target_min_fw;
+	uint32_t target_max_fw;
 	uint32_t fw_version;
-	char build_info[0x28];
+	char build_info[0x2C];
 	uint32_t toc_crc32;
 } __attribute__((packed));
 typedef struct _pkg_toc pkg_toc;
+
+enum E2X_MISC_TYPES {
+	E2X_MISC_RECOVERY_CONFIG = 0, // rconfig/rbootstrap
+	E2X_MISC_RECOVERY_BLOB, // rblob
+	E2X_MISC_RECOVERY_MBR, // rmbr
+	E2X_MISC_NOTYPE
+};
+static uint32_t e2x_misc_type_offsets[] = { 0x800, 0x6000, 0x600 };
+static uint32_t e2x_misc_type_sizes[] = { BLOCK_SIZE, 0x39000, BLOCK_SIZE };
+
 
 // restore point-----------
 #define RPOINT_NAME "psp2rpoint"
@@ -174,11 +191,12 @@ struct _npup_hdr { // size is 0x400
 	ScePupSegmentInfo version_info;
 	ScePupSegmentInfo disclaimer_info;
 	ScePupSegmentInfo updater_info;
+	ScePupSegmentInfo setupper_info;
 	ScePupSegmentInfo fwimage_info;
 	ScePupSegmentInfo addcont_all_info;
 	ScePupSegmentInfo addcont_vita_info;
 	ScePupSegmentInfo addcont_dolce_info;
-	char padding[0x200 - (0x80 + 0x20 * 7)];
+	char padding[0x200 - (0x80 + 0x20 * 8)];
 	char fw_string_block[0x200];
 } __attribute__((packed));
 typedef struct _npup_hdr npup_hdr;
@@ -204,7 +222,7 @@ enum PUP_SPACKAGES {
 	SPKG_TOUCH_CFG,
 	SPKG_BIC_FW,
 	SPKG_BIC_DF,
-	SPKG_SYSCON_UNK,
+	SPKG_SYSCON_CPMGR,
 	SPKG_KERNEL_UNK,
 	SPKG_SYSTEM_PATCH,
 	SPKG_SYSDATA,

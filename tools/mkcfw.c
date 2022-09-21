@@ -115,7 +115,7 @@ incr_comp:
 		if (pid == SCEMBR_PART_SBLS) {
 			fs_entry.type = FSPART_TYPE_BL;
 			fwimg_toc->bl_fs_no = fwimg_toc->fs_count;
-		} else if (!pid)
+		} else if (!pid && dstoff == 0x400)
 			fs_entry.type = FSPART_TYPE_E2X;
 	}
 	fwimg_toc->fs_count -= -1;
@@ -237,14 +237,22 @@ void read_image(const char* image) {
 	pread(fp, &fwimg_toc, sizeof(pkg_toc), 0);
 	printf("Image magic: 0x%X\nImage version: 0x%X\n"
 		"Firmware version: 0x%08X\nTarget type: %s\n"
+		"Minimum firmware: 0x%08X\nMaximum firmware: 0x%08X\n"
 		"Hardware rev: 0x%08X with mask: 0x%08X\n"
 		"FS_PART count: %d crc32d: 0x%08X\n"
 		"Build info: %s\n\n",
 		fwimg_toc.magic, fwimg_toc.version,
 		fwimg_toc.fw_version, target_dev[fwimg_toc.target],
+		fwimg_toc.target_min_fw, fwimg_toc.target_max_fw,
 		fwimg_toc.target_hw_rev, fwimg_toc.target_hw_mask,
 		fwimg_toc.fs_count, fwimg_toc.toc_crc32,
 		fwimg_toc.build_info);
+	if (fwimg_toc.force_component_update)
+		printf(" - Force components update\n");
+	if (fwimg_toc.target_require_enso)
+		printf(" - Require a preset enso installation\n");
+	if (fwimg_toc.use_file_logging)
+		printf(" - Log kernel log output to file\n");
 	uint8_t ecount = 0;
 	pkg_fs_etr fs_entry;
 	uint32_t soff = sizeof(pkg_toc), boff = (sizeof(pkg_toc) + (fwimg_toc.fs_count * sizeof(pkg_fs_etr)));
@@ -283,7 +291,7 @@ void read_image(const char* image) {
 	return;
 }
 
-void fwimg2pup(const char* fwimage, const char* updater, const char* addcont_all, const char* addcont_vita, const char* addcont_dolce, const char* disclaimer, const char* pup, uint32_t pup_fw) {
+void fwimg2pup(const char* fwimage, const char* updater, const char *setupper, const char* addcont_all, const char* addcont_vita, const char* addcont_dolce, const char* disclaimer, const char* pup, uint32_t pup_fw) {
 	printf("\nGPUP[0x%08X] %s + %s + %s + %s + %s + %s -> %s\n", pup_fw, updater, fwimage, addcont_all, addcont_vita, addcont_dolce, disclaimer, pup);
 	
 	npup_hdr head;
@@ -291,7 +299,7 @@ void fwimg2pup(const char* fwimage, const char* updater, const char* addcont_all
 	head.magic = NPUP_MAGIC;
 	head.package_version = NPUP_VERSION;
 	head.image_version = 0xF000000F + (pup_fw & 0x0FFFFFF0);
-	head.file_count = 4;
+	head.file_count = 8;
 	head.header_length = 0x200;
 	
 	// VERSION STRING (unused)
@@ -311,12 +319,18 @@ void fwimg2pup(const char* fwimage, const char* updater, const char* addcont_all
 	// UPDATER INFO
 	head.updater_info.data_length = getSz(updater);
 	head.updater_info.data_offset = sizeof(head) + ALIGN_SECTOR(head.disclaimer_info.data_length);
-	head.updater_info.entry_id = 0x200;
+	head.updater_info.entry_id = 0x200; // psp2swu.self id
 	head.updater_info.unk_0x18 = NPUP_NUNK;
-	
+
+	// SETUPPER INFO
+	head.setupper_info.data_length = getSz(setupper);
+	head.setupper_info.data_offset = head.updater_info.data_offset + ALIGN_SECTOR(head.updater_info.data_length);
+	head.setupper_info.entry_id = 0x204; // cui_setupper.self id
+	head.setupper_info.unk_0x18 = NPUP_NUNK;
+
 	// FWIMAGE INFO
 	head.fwimage_info.data_length = getSz(fwimage);
-	head.fwimage_info.data_offset = head.updater_info.data_offset + ALIGN_SECTOR(head.updater_info.data_length);
+	head.fwimage_info.data_offset = head.setupper_info.data_offset + ALIGN_SECTOR(head.setupper_info.data_length);
 	head.fwimage_info.entry_id = NPUP_FWIMAGE_ID;
 	head.fwimage_info.unk_0x18 = NPUP_NUNK;
 	
@@ -359,6 +373,14 @@ void fwimg2pup(const char* fwimage, const char* updater, const char* addcont_all
 		fclose(fp);
 	} else
 		printf("PUPG: no updater\n");
+
+	// SETUPPER
+	fp = fopen(setupper, "rb");
+	if (fp) {
+		fread(pup_b + head.setupper_info.data_offset, head.setupper_info.data_length, 1, fp);
+		fclose(fp);
+	} else
+		printf("PUPG: no setupper\n");
 
 	// FWIMAGE
 	fp = fopen(fwimage, "rb");
@@ -422,10 +444,10 @@ int main(int argc, char* argv[]) {
 		return -1;
 	}
 
-	uint8_t target_type = FWTARGET_SAFE;
-	uint32_t pup_fw = 0, fwimg_fw = 0, hw_type = 0, hw_mask = 0, pkg_mask = 0;
+	uint8_t target_type = FWTARGET_SAFE, force_scu = 0, req_enso = 0, log2file = 0;
+	uint32_t pup_fw = 0, fwimg_fw = 0, hw_type = 0, hw_mask = 0, pkg_mask = 0, min_fw = 0, max_fw = 0;
 	char* build_info = NULL, * gui_image_list = NULL, * gui_devfw_list = NULL, gui_all_list[SCEMBR_PART_UNUSED + DEV_NODEV + 2];
-	int gui = 0, create_pup = 0, gui_use_enso = 0;
+	int gui = 0, create_pup = 0, gui_use_enso = 0, use_e2x_rconfig = 0, use_e2x_rblob = 0, use_e2x_rmbr = 0;
 
 	memset(gui_all_list, 0, sizeof(gui_all_list));
 
@@ -451,7 +473,7 @@ int main(int argc, char* argv[]) {
 			i = i + 1;
 			pup_fw = (uint32_t)strtoul((argv[i] + 2), NULL, 16);
 			if (!gui && getSz(argv[1])) {
-				fwimg2pup(argv[1], "psp2swu.self", "patches_all.zip", "patches_vita.zip", "patches_dolce.zip", "pupinfo.txt", "PSP2UPDAT.PUP", pup_fw);
+				fwimg2pup(argv[1], "psp2swu.self", "cui_setupper.self", "patches_all.zip", "patches_vita.zip", "patches_dolce.zip", "pupinfo.txt", "PSP2UPDAT.PUP", pup_fw);
 				if (!gui)
 					return 0;
 				while (1) {};
@@ -479,7 +501,24 @@ int main(int argc, char* argv[]) {
 		} else if (!strcmp("-ld", argv[i])) {
 			i = i + 1;
 			gui_devfw_list = argv[i];
-		}
+		} else if (!strcmp("-min_fw", argv[i])) {
+			i = i + 1;
+			min_fw = (uint32_t)strtoul((argv[i] + 2), NULL, 16);
+		} else if (!strcmp("-max_fw", argv[i])) {
+			i = i + 1;
+			max_fw = (uint32_t)strtoul((argv[i] + 2), NULL, 16);
+		} else if (!strcmp("-force_component_update", argv[i]))
+			force_scu = 1;
+		else if (!strcmp("-require_enso", argv[i]))
+			req_enso = 1;
+		else if (!strcmp("-use_file_logging", argv[i]))
+			log2file = 1;
+		else if (!strcmp("-use_e2x_recovery_config", argv[i]))
+			use_e2x_rconfig = 1;
+		else if (!strcmp("-use_e2x_recovery_blob", argv[i]))
+			use_e2x_rblob = 1;
+		else if (!strcmp("-use_e2x_recovery_mbr", argv[i]))
+			use_e2x_rmbr = 1;
 	}
 
 	unlink(argv[1]);
@@ -513,6 +552,12 @@ int main(int argc, char* argv[]) {
 	fwimg_toc.fw_version = fwimg_fw;
 	fwimg_toc.target_hw_rev = hw_type;
 	fwimg_toc.target_hw_mask = hw_mask;
+	fwimg_toc.force_component_update = force_scu;
+	fwimg_toc.unused = 0;
+	fwimg_toc.target_require_enso = req_enso;
+	fwimg_toc.use_file_logging = log2file;
+	fwimg_toc.target_min_fw = min_fw;
+	fwimg_toc.target_max_fw = max_fw;
 	if (build_info)
 		snprintf(fwimg_toc.build_info, sizeof(fwimg_toc.build_info), "%s", build_info);
 	fwrite(&fwimg_toc, sizeof(pkg_toc), 1, fd);
@@ -533,6 +578,24 @@ int main(int argc, char* argv[]) {
 		printf("add_images [enso_ex]\n");
 		if (!fat2e2x())
 			add_entry(fd, "slim.e2x", 0, &fwimg_toc, 0x400, fwimg_fw, 0);
+	}
+
+	// add enso_ex v5+ recovery configuration/bootstrap
+	if (use_e2x_rconfig) {
+		printf("add_images [enso_ex recovery configuration]\n");
+		add_entry(fd, "rconfig.e2xp", 0, &fwimg_toc, e2x_misc_type_offsets[E2X_MISC_RECOVERY_CONFIG], fwimg_fw, 0);
+	}
+
+	// add enso_ex v5+ recovery blob
+	if (use_e2x_rblob) {
+		printf("add_images [enso_ex recovery blob]\n");
+		add_entry(fd, "rblob.e2xp", 0, &fwimg_toc, e2x_misc_type_offsets[E2X_MISC_RECOVERY_BLOB], fwimg_fw, 0);
+	}
+
+	// add enso_ex v5+ recovery mbr
+	if (use_e2x_rmbr) {
+		printf("add_images [enso_ex recovery mbr]\n");
+		add_entry(fd, "rmbr.bin", 0, &fwimg_toc, e2x_misc_type_offsets[E2X_MISC_RECOVERY_MBR], fwimg_fw, 0);
 	}
 
 	// add devices
@@ -562,7 +625,7 @@ int main(int argc, char* argv[]) {
 	sync_fwimage(argv[1], &fwimg_toc);
 	
 	if (create_pup)
-		fwimg2pup(argv[1], "psp2swu.self", "patches_all.zip", "patches_vita.zip", "patches_dolce.zip", "pupinfo.txt", "PSP2UPDAT.PUP", pup_fw);
+		fwimg2pup(argv[1], "psp2swu.self", "cui_setupper.self", "patches_all.zip", "patches_vita.zip", "patches_dolce.zip", "pupinfo.txt", "PSP2UPDAT.PUP", pup_fw);
 
 	printf("\nfinished: %s\n", argv[1]);
 	

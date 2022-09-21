@@ -12,59 +12,59 @@
 static int enable_f_logging = 0; // enable file loging
 static char buf_logging[256];
 
-#define LOG(...)                                                       \
-	do                                                                 \
-	{                                                                  \
-		ksceDebugPrintf(__VA_ARGS__);                                  \
-		if (enable_f_logging)                                          \
-		{                                                              \
-			memset(buf_logging, 0, sizeof(buf_logging));               \
-			snprintf(buf_logging, sizeof(buf_logging), ##__VA_ARGS__); \
-			logg(buf_logging, strlen(buf_logging), LOG_LOC, 2);        \
-		};                                                             \
+#define LOG(...)                                                       					\
+	do                                                                 					\
+	{                                                                 					\
+		sceDebugPrintf(__VA_ARGS__);                                  					\
+		if (enable_f_logging)                                          					\
+		{                                                              					\
+			memset(buf_logging, 0, sizeof(buf_logging));               					\
+			snprintf(buf_logging, sizeof(buf_logging), ##__VA_ARGS__); 					\
+			logg(buf_logging, strnlen(buf_logging, sizeof(buf_logging)), LOG_LOC, 2);  	\
+		};                                                             					\
 	} while (0)
 
-#define LOG_START(...)                                                 \
-	do                                                                 \
-	{                                                                  \
-		ksceDebugPrintf("starting new log\n");                         \
-		ksceDebugPrintf(__VA_ARGS__);                                  \
-		if (enable_f_logging)                                          \
-		{                                                              \
-			memset(buf_logging, 0, sizeof(buf_logging));               \
-			snprintf(buf_logging, sizeof(buf_logging), ##__VA_ARGS__); \
-			logg(buf_logging, strlen(buf_logging), LOG_LOC, 1);        \
-		};                                                             \
+#define LOG_START(...)                                                 					\
+	do                                                                 					\
+	{                                                                  					\
+		sceDebugPrintf("starting new log\n");                         					\
+		sceDebugPrintf(__VA_ARGS__);                                 					\
+		if (enable_f_logging)                                          					\
+		{                                                              					\
+			memset(buf_logging, 0, sizeof(buf_logging));               					\
+			snprintf(buf_logging, sizeof(buf_logging), ##__VA_ARGS__); 					\
+			logg(buf_logging, strnlen(buf_logging, sizeof(buf_logging)), LOG_LOC, 1);	\
+		};                                                             					\
 	} while (0)
 
 static int logg(void* buffer, int length, const char* logloc, int create) {
 	int fd;
 	if (create == 0) {
-		fd = ksceIoOpen(logloc, SCE_O_WRONLY | SCE_O_APPEND, 6);
+		fd = sceIoOpen(logloc, SCE_O_WRONLY | SCE_O_APPEND, 6);
 	} else if (create == 1) {
-		fd = ksceIoOpen(logloc, SCE_O_WRONLY | SCE_O_TRUNC | SCE_O_CREAT, 6);
+		fd = sceIoOpen(logloc, SCE_O_WRONLY | SCE_O_TRUNC | SCE_O_CREAT, 6);
 	} else if (create == 2) {
-		fd = ksceIoOpen(logloc, SCE_O_WRONLY | SCE_O_APPEND | SCE_O_CREAT, 6);
+		fd = sceIoOpen(logloc, SCE_O_WRONLY | SCE_O_APPEND | SCE_O_CREAT, 6);
 	}
 	if (fd < 0)
 		return 0;
-	ksceIoWrite(fd, buffer, length);
-	ksceIoClose(fd);
+	sceIoWrite(fd, buffer, length);
+	sceIoClose(fd);
 	return 1;
 }
 
 // fix for sdstor0 RW while system is running
 static int siofix(void* func) {
 	int ret = 0, res = 0, uid = 0;
-	ret = uid = ksceKernelCreateThread("siofix", func, 64, 0x10000, 0, 0, 0);
-	if ((ret < 0) || ((ret = ksceKernelStartThread(uid, 0, NULL)) < 0) || ((ret = ksceKernelWaitThreadEnd(uid, &res, NULL)) < 0)) {
+	ret = uid = sceKernelCreateThread("siofix", func, 64, 0x10000, 0, 0, 0);
+	if ((ret < 0) || ((ret = sceKernelStartThread(uid, 0, NULL)) < 0) || ((ret = sceKernelWaitThreadEnd(uid, &res, NULL)) < 0)) {
 		ret = -1;
 		goto cleanup;
 	}
 	ret = res;
 cleanup:
 	if (uid > 0)
-		ksceKernelDeleteThread(uid);
+		sceKernelDeleteThread(uid);
 	return ret;
 }
 
