@@ -1,10 +1,5 @@
 # psp2fwtool
 Firmware manager for Playstation Vita/TV
-
-## Current known issues/bugs
- - all pc tools are broken on latest windows 11 insider
-   - cause: unknown
-   - workaround: use WSL
    
 ## TODO:
  - a proper readme with function documentation
@@ -37,7 +32,7 @@ Firmware manager for Playstation Vita/TV
 5. Press [circle] to reboot the device.
 
 ### Installing a NPUP package
- - Install with any modoru version as you would a normal pup
+ - Install with any modoru version as you would a normal pup, neighbourhood works too if you have enso
 
 ## dualOS
  - "dualOS" splits the EMMC in half and adds another OS install - "slaveOS".
@@ -53,11 +48,11 @@ Firmware manager for Playstation Vita/TV
  - The image can be restored at any time and on any supported firmware.
  - The image size is around 4GB for full and 1GB for partial (without ur0/ux0).
  - To create/restore it use the fwtool app:
-   - 'Create a EMMC image' will create a restore point in 'ux0:data/fwtool/fwrpoint.bin'
-   - 'Restore the EMMC image' will flash the restore point from 'ux0:data/fwtool/fwrpoint.bin'
+   - 'Create a EMMC image' will create a restore point in 'ux0:data/fwtool/psp2rpoint'
+   - 'Restore the EMMC image' will flash the restore point from 'ux0:data/fwtool/psp2rpoint'
 
 ## Additional PC Tools
- - fstool is a filesystem tool that supports various operations on SCE formatted devices/dumps
+ - mkfs is a filesystem tool that supports various operations on SCE formatted devices/dumps
  - mkernie is a syscon update repacker/decryptor/encryptor/cfw-maker
  - mksbls is a sbls manager (read, edit, create)
  - mkmbr is a mbr manager (read, edit, create)
