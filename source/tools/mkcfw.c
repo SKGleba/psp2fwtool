@@ -14,8 +14,12 @@
 #include <fcntl.h>
 #include <unistd.h>
 
-#include "../plugin/fwtool.h"
-#include "../plugin/crc32.c"
+#include "../fwtool.h"
+#include "../kernel/crc32.c"
+
+ //misc--------------------
+#define ALIGN_SECTOR(s) ((s + (BLOCK_SIZE - 1)) & -BLOCK_SIZE) // align (arg) to BLOCK_SIZE
+#define ARRAYSIZE(x) ((sizeof(x) / sizeof(0 [x])) / ((size_t)(!(sizeof(x) % sizeof(0 [x])))))
 
 #ifdef WINDOWS
 uint32_t pread(int fd, void* buf, size_t count, off_t offset) {
@@ -38,12 +42,17 @@ uint32_t getSz(const char* src) {
 	return sz;
 }
 
-static uint32_t get_block_crc32_file(char* inp) {
-	char crcbuf[BLOCK_SIZE];
+static uint32_t get_block_crc32_file(char* inp, uint32_t belowblock) {
+	uint8_t crcbuf[BLOCK_SIZE];
 	FILE* fp = fopen(inp, "rb");
-	fread(&crcbuf, BLOCK_SIZE, 1, fp);
+	if (belowblock)
+		fread(crcbuf, belowblock, 1, fp);
+	else
+		fread(crcbuf, BLOCK_SIZE, 1, fp);
 	fclose(fp);
-	return crc32(0, &crcbuf, BLOCK_SIZE);
+	if (belowblock)
+		return crc32(0, crcbuf, belowblock);
+	return crc32(0, crcbuf, BLOCK_SIZE);
 }
 
 int fat2e2x() {
@@ -73,13 +82,18 @@ int fat2e2x() {
 }
 
 void add_entry(FILE* fd, const char* src, uint8_t pid, pkg_toc* fwimg_toc, uint32_t dstoff, uint32_t hdr2, uint32_t hdr3) {
-	uint32_t fsize = getSz(src), gsize = 0;
+	uint32_t gcrc = 0, gsize = 0;
+	uint32_t fsize = getSz(src);
 	if (!fsize)
 		return;
-	pkg_fs_etr fs_entry;
+	if (pid == SCEMBR_PART_EMPTY && dstoff != 0x400) {
+		for (int i = 0; i < E2X_MISC_NOTYPE; i++) {
+			if (dstoff == e2x_misc_type_offsets[i])
+				fsize = e2x_misc_type_sizes[i];
+		}
+	}
 	char cmdbuf[128];
 	memset(cmdbuf, 0, 128);
-	memset(&fs_entry, 0, sizeof(pkg_fs_etr));
 	sprintf(cmdbuf, "gzip -9 -k %s", src);
 	system(cmdbuf);
 #ifdef WINDOWS
@@ -88,11 +102,15 @@ void add_entry(FILE* fd, const char* src, uint8_t pid, pkg_toc* fwimg_toc, uint3
 	system("mv *.gz rawfs.gz");
 #endif
 	gsize = getSz("rawfs.gz");
+	if (!gsize)
+		return;
+	gcrc = get_block_crc32_file("rawfs.gz", (gsize > BLOCK_SIZE) ? BLOCK_SIZE : gsize);
 #ifdef WINDOWS
 	system("type rawfs.gz >> fwimage.bin_part");
 #else
 	system("cat rawfs.gz >> fwimage.bin_part");
 #endif
+	unlink("rawfs.gz");
 	int target_component = 0;
 incr_comp:
 	if (pid > SCEMBR_PART_UNUSED) {
@@ -100,13 +118,15 @@ incr_comp:
 		target_component -= -1;
 		goto incr_comp;
 	}
+	pkg_fs_etr fs_entry;
+	memset(&fs_entry, 0, sizeof(pkg_fs_etr));
 	fs_entry.magic = FSPART_MAGIC;
 	fs_entry.part_id = pid;
 	fs_entry.pkg_off = fwimg_toc->fs_count;
 	fs_entry.pkg_sz = gsize;
 	fs_entry.dst_off = dstoff;
 	fs_entry.dst_sz = fsize;
-	fs_entry.crc32 = get_block_crc32_file("rawfs.gz");
+	fs_entry.crc32 = gcrc;
 	fs_entry.hdr2 = hdr2;
 	fs_entry.hdr3 = hdr3;
 	if (target_component)
@@ -115,12 +135,11 @@ incr_comp:
 		if (pid == SCEMBR_PART_SBLS) {
 			fs_entry.type = FSPART_TYPE_BL;
 			fwimg_toc->bl_fs_no = fwimg_toc->fs_count;
-		} else if (!pid && dstoff == 0x400)
+		} else if (pid == SCEMBR_PART_EMPTY && dstoff == 0x400)
 			fs_entry.type = FSPART_TYPE_E2X;
 	}
 	fwimg_toc->fs_count -= -1;
 	fwrite(&fs_entry, sizeof(pkg_fs_etr), 1, fd);
-	unlink("rawfs.gz");
 	return;
 }
 

@@ -346,8 +346,8 @@ while ($true) {
     if ($result -eq [System.Windows.Forms.DialogResult]::OK) {
         $cfwimg_fw = '-fw ' + $fwBox.Text
         $cfwimg_type = '-t ' + $fwType.SelectedIndex
-        $cfwimg_minfw = '-min_fw ' + $fw_min_Box
-        $cfwimg_maxfw = '-max_fw ' + $fw_max_Box
+        $cfwimg_minfw = '-min_fw ' + $fw_min_Box.Text
+        $cfwimg_maxfw = '-max_fw ' + $fw_max_Box.Text
         $cfwimg_hw = '-hw ' + $hw_rev_Box.Text + ' ' + $hw_mask_Box.Text
         $cfwimg_msg = '-msg ' + $info_Box.Text
         $cfwimg_op = '-gui'

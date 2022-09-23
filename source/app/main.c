@@ -20,8 +20,8 @@
 #include <psp2/kernel/clib.h>
 #include <psp2/kernel/processmgr.h>
 #include "debugScreen.h"
-#include "../plugin/fwtool.h"
-#include "fwtool_funcs.h"
+#include "../fwtool.h"
+#include "../kernel/fwtool_funcs.h"
 
 static int redir_writes = 0, file_logging = 0, skip_int_chk = 0, already_dualos = 0, already_rpoint = 0, uout = 0;
 
@@ -69,7 +69,7 @@ void main_check_stop(uint32_t code) {
 	sceKernelDelayThread(200 * 1000);
 }
 
-#include "../plugin/crc32.c"
+#include "../kernel/crc32.c"
 #include "fwimg.c"
 #include "rpoint.c"
 #include "dualos.c"
@@ -214,7 +214,7 @@ int main(int argc, char* argv[]) {
 	}
 	
 	// check if restore point exists
-	int rcfd = sceIoOpen("ux0:data/fwtool/fwrpoint.bin", SCE_O_RDONLY, 0);
+	int rcfd = sceIoOpen("ux0:data/fwtool/" RPOINT_NAME, SCE_O_RDONLY, 0);
 	if (rcfd >= 0) {
 		sceIoClose(rcfd);
 		already_rpoint = 1;

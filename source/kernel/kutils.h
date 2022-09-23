@@ -53,6 +53,10 @@ static int logg(void* buffer, int length, const char* logloc, int create) {
 	return 1;
 }
 
+//misc--------------------
+#define ALIGN_SECTOR(s) ((s + (BLOCK_SIZE - 1)) & -BLOCK_SIZE) // align (arg) to BLOCK_SIZE
+#define ARRAYSIZE(x) ((sizeof(x) / sizeof(0 [x])) / ((size_t)(!(sizeof(x) % sizeof(0 [x])))))
+
 // fix for sdstor0 RW while system is running
 static int siofix(void* func) {
 	int ret = 0, res = 0, uid = 0;

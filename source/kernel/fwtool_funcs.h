@@ -18,3 +18,33 @@ extern int fwtool_dualos_create(void);
 extern int fwtool_dualos_swap(void);
 extern int fwtool_update_dev(int id, uint32_t size, uint32_t u_hdr_data[3]);
 extern int fwtool_check_rvk(int type, int id, uint32_t hdr2, uint32_t hdr3);
+
+enum FWTOOL_MINI_COMMANDS {
+    CMD_SET_FWIMG_PATH,
+    CMD_GET_MBR,
+    CMD_GET_BL,
+    CMD_GET_GZ,
+    CMD_GET_FSP,
+    CMD_SET_FILE_LOGGING,
+    CMD_CMP_TARGET,
+    CMD_BL_TO_FSP,
+    CMD_UMOUNT,
+    CMD_WRITE_REDIRECT,
+    CMD_GRW_MOUNT,
+    CMD_SET_INACTIVE_BL_SHA256,
+    CMD_GET_ENSO_STATUS,
+    CMD_NO_BL_PERSONALIZE,
+    CMD_SET_FWRP_PATH,
+    CMD_GET_REAL_MBR,
+    CMD_GET_LOCK_STATE,
+    CMD_SKIP_CRC,
+    CMD_VALIDATE_KBLFW,
+    CMD_SET_PERF_MODE,
+    CMD_GET_DUALOS_HEADER,
+    CMD_WIPE_DUALOS,
+    CMD_GET_HW_REV,
+    CMD_FORCE_DEV_UPDATE,
+    CMD_REBOOT,
+    CMD_GET_CURRENT_FWV,
+    CMD_SET_TSMP_FWV
+};

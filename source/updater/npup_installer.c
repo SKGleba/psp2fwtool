@@ -21,9 +21,9 @@
 #include <psp2/kernel/clib.h>
 #include <psp2/kernel/processmgr.h>
 #include "debugScreen.h"
-#include "../plugin/fwtool.h"
-#include "../app/fwtool_funcs.h"
 #include "Archives.h"
+#include "../fwtool.h"
+#include "../kernel/fwtool_funcs.h"
 #include "../compile_fwtool.h"
 
 #define KMOD_LOC "ud0:fwtool.skprx"

@@ -12,11 +12,14 @@
 
 #include "decl.h"
 
-#include "tai_compat.c"
-#include "fwtool.h"
-#include "crc32.c"
+#include "../fwtool.h"
+#include "fwtool_funcs.h"
+
 #include "kutils.h"
 #include "missing.h"
+
+#include "crc32.c"
+#include "tai_compat.c"
 
 static SceIoDevice custom;
 char* fwimage = NULL, * fwrpoint = NULL;
@@ -348,7 +351,7 @@ int fwtool_read_fwimage(uint32_t offset, uint32_t size, uint32_t exp_crc32, uint
 		goto rerr;
 
 	LOG("crchecking...\n");
-	if (cmp_crc32(exp_crc32, (unzip) ? gz_buf : fsp_buf, BLOCK_SIZE) < 0)
+	if (cmp_crc32(exp_crc32, (unzip) ? gz_buf : fsp_buf, (size > BLOCK_SIZE) ? BLOCK_SIZE : size) < 0)
 		goto rerr;
 
 	LOG("ungzipping...\n");
@@ -380,17 +383,20 @@ int fwtool_write_partition(uint32_t offset, uint32_t size, uint8_t partition) {
 	offset = offset / BLOCK_SIZE;
 	int state = 0, opret = -1;
 	ENTER_SYSCALL(state);
-	LOG("fwtool_write_partition 0x%X 0x%X %d (%s)\n", size, offset, partition, pcode_str[partition]);
+	LOG("fwtool_write_partition 0x%X 0x%X %d (%s)\n", offset, size, partition, pcode_str[partition]);
 
-	master_block_t* master = (master_block_t*)mbr;
-	int pno = find_part(master, partition, 0);
-	if (pno < 0)
-		goto werr;
+	uint32_t main_off = 0;
+	if (partition != SCEMBR_PART_EMPTY) {
+		master_block_t* master = (master_block_t*)mbr;
+		int pno = find_part(master, partition, 0);
+		if (pno < 0)
+			goto werr;
 
-	LOG("getting partition off...\n");
-	uint32_t main_off = master->partitions[pno].off;
-	if (!main_off || (offset + size) > master->partitions[pno].sz)
-		goto werr;
+		LOG("getting partition off...\n");
+		main_off = master->partitions[pno].off;
+		if (!main_off || (offset + size) > master->partitions[pno].sz)
+			goto werr;
+	}
 
 	LOG("writing partition...\n");
 	if (default_write(main_off + offset, fsp_buf, size) < 0)
@@ -1011,7 +1017,10 @@ int fwtool_talku(int cmd, int cmdbuf) {
 		opret = 0;
 		break;
 	case CMD_GET_CURRENT_FWV: // get current firmware version
-			opret = fw;
+		opret = fw;
+		break;
+	case CMD_SET_TSMP_FWV: // set sdk version in deci4p tsmp
+		opret = sceSysrootSetTsmpVersionInt("SdkVersion", 10, (uint32_t)cmdbuf);
 		break;
 	default:
 		break;

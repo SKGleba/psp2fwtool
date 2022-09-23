@@ -16,7 +16,7 @@
 #include <sys/stat.h>
 #include "stdbool.h"
 
-#include "../plugin/fwtool.h"
+#include "../fwtool.h"
 
 #define MKMBR_SLAVE
 #include "mkmbr.c"

@@ -27,7 +27,7 @@ link_directories(
 )
 
 add_executable(compile_fwtool.elf
-	plugin/fwtool.c
+	kernel/fwtool.c
 )
 
 target_link_libraries(compile_fwtool.elf
@@ -43,6 +43,7 @@ target_link_libraries(compile_fwtool.elf
 	SceSysclibForDriver_custom
 	SceSysmemForDriver_custom
 	SceSysrootForKernel_custom
+	SceSysrootForDriver_custom
 )
 
 set_target_properties(compile_fwtool.elf
@@ -51,8 +52,8 @@ set_target_properties(compile_fwtool.elf
 )
 
 add_custom_target(compile_fwtool.skprx ALL
-	COMMAND vita-elf-create -e ${CMAKE_SOURCE_DIR}/plugin/fwtool.yml compile_fwtool.elf compile_fwtool.velf
-	COMMAND vita-elf-export k compile_fwtool.elf ${CMAKE_SOURCE_DIR}/plugin/fwtool.yml ${CMAKE_CURRENT_BINARY_DIR}/fwtoolkernel_stubs.yml
+	COMMAND vita-elf-create -e ${CMAKE_SOURCE_DIR}/kernel/fwtool.yml compile_fwtool.elf compile_fwtool.velf
+	COMMAND vita-elf-export k compile_fwtool.elf ${CMAKE_SOURCE_DIR}/kernel/fwtool.yml ${CMAKE_CURRENT_BINARY_DIR}/fwtoolkernel_stubs.yml
 	COMMAND vita-libs-gen ${CMAKE_CURRENT_BINARY_DIR}/fwtoolkernel_stubs.yml ${CMAKE_CURRENT_BINARY_DIR}/fwtoolkernel_stubs
 	COMMAND make -C ${CMAKE_CURRENT_BINARY_DIR}/fwtoolkernel_stubs
 	COMMAND vita-make-fself -c compile_fwtool.velf compile_fwtool.skprx
@@ -75,9 +76,9 @@ link_directories(
 )
 
 add_executable(compile_swu.elf
-	swu/npup_installer.c
-	swu/Archives.c
-	swu/debugScreenFont.c
+	updater/npup_installer.c
+	updater/Archives.c
+	updater/debugScreenFont.c
 )
 
 target_link_libraries(compile_swu.elf
@@ -106,7 +107,7 @@ add_dependencies(compile_psp2swu.self compile_swu.velf)
 
 #-- PSP2SWU LAUNCHER FOR CUI SETUPPER (kernel)
 add_executable(compile_swu_launch.elf
-	swu/swu_launch.c
+	updater/swu_launch.c
 )
 
 target_link_libraries(compile_swu_launch.elf
@@ -121,7 +122,7 @@ set_target_properties(compile_swu_launch.elf
 )
 
 add_custom_target(compile_swu_launch.velf ALL
-	COMMAND vita-elf-create -e ${CMAKE_SOURCE_DIR}/swu/swu_launch.yml compile_swu_launch.elf compile_swu_launch.velf
+	COMMAND vita-elf-create -e ${CMAKE_SOURCE_DIR}/updater/swu_launch.yml compile_swu_launch.elf compile_swu_launch.velf
 )
 
 add_custom_target(compile_swu_launch.skprx ALL
@@ -141,7 +142,7 @@ add_dependencies(compile_swu_launch.h compile_swu_launch.skprx)
 
 #-- CUI SETUPPER REPLACEMENT
 add_executable(compile_sup.elf
-	swu/npup_setupper.c
+	updater/npup_setupper.c
 )
 
 target_link_libraries(compile_sup.elf

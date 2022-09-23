@@ -12,7 +12,11 @@
 #include <inttypes.h>
 #include <stdint.h>
 
-#include "../plugin/fwtool.h"
+#include "../fwtool.h"
+
+ //misc--------------------
+#define ALIGN_SECTOR(s) ((s + (BLOCK_SIZE - 1)) & -BLOCK_SIZE) // align (arg) to BLOCK_SIZE
+#define ARRAYSIZE(x) ((sizeof(x) / sizeof(0 [x])) / ((size_t)(!(sizeof(x) % sizeof(0 [x])))))
 
 #define CVMB(x) ((x / 2) / 1024)
 #define MBCV(x) ((x * 1024) * 2)

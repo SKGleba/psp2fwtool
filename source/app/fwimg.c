@@ -442,6 +442,10 @@ int update_default(const char* fwimage, int ud0_pathdir, uint32_t fwimg_start_of
 	main_check_stop(7);
 	if (redir_writes)
 		goto err;
+	if (fwimg_toc.target == FWTARGET_DEVTOOL && verif_bl) {
+		printf("Updating SDK version in TSMP\n");
+		fwtool_talku(CMD_SET_TSMP_FWV, fwimg_toc.fw_version | 0x11);
+	}
 	printf("Removing ux0:id.dat... ");
 	ret = sceIoRemove("ux0:id.dat");
 	printf("0x%X\nRemoving ux0:tai/config.txt... ", ret);

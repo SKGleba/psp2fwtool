@@ -69,4 +69,7 @@ int sceKernelMemcpyKernelToUser(void* dst, const void* src, uint32_t size);
 // SceSysrootForKernel
 void* sceSysrootGetSysrootBase(void);
 
+// SceSysrootForDriver
+int sceSysrootSetTsmpVersionInt(const char* type, unsigned int type_len, uint32_t version);
+
 #endif

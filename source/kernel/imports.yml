@@ -91,3 +91,8 @@ modules:
         nid: 0x3691DA45
         functions:
           sceSysrootGetSysrootBase: 0x3E455842
+      SceSysrootForDriver:
+        kernel: true
+        nid: 0x2ED7F97A
+        functions:
+          sceSysrootSetTsmpVersionInt: 0x631141E2
