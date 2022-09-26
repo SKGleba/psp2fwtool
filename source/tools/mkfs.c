@@ -5,6 +5,7 @@
  * This software may be modified and distributed under the terms
  * of the MIT license.  See the LICENSE file for details.
  */
+#define _FILE_OFFSET_BITS 64
 
 #include <stdio.h>
 #include <string.h>
@@ -26,14 +27,15 @@ int mkdir_proxy(char* path, uint32_t perms) {
     return mkdir(path);
 }
 uint32_t pread(int fd, void* buf, size_t count, off_t offset) {
-    lseek(fd, offset, SEEK_SET);
+    lseek64(fd, offset, SEEK_SET);
     return read(fd, buf, count);
 }
 uint32_t pwrite(int fd, void* buf, size_t count, off_t offset) {
-    lseek(fd, offset, SEEK_SET);
+    lseek64(fd, offset, SEEK_SET);
     return write(fd, buf, count);
 }
 #else
+#define O_BINARY 0
 int mkdir_proxy(char* path, uint32_t perms) {
     return mkdir(path, perms);
 }
@@ -85,7 +87,7 @@ int x_tractor(char* device, char *partition, char* dest, int active, int replace
     char mbr_raw[512];
     memset(mbr_raw, 0, 512);
     master_block_t* mbr = (master_block_t*)mbr_raw;
-    int fp = open(device, O_RDWR);
+    int fp = open(device, O_RDWR | O_BINARY);
     if (fp < 0) {
         printf("could not open %s\n", device);
         return -1;
