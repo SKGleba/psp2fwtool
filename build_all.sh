@@ -6,10 +6,15 @@ mkdir build;
 cd source/tools/;
 cp mkcfw-wingui.ps1 ../../build/mkcfw-wingui.ps1;
 gcc mkcfw.c -Wno-multichar -o ../../build/mkcfw;
+x86_64-w64-mingw32-gcc-win32 -mno-ms-bitfields -Wno-multichar -DWINDOWS mkcfw.c -o ../../build/mkcfw.exe
 gcc mksbls.c -o ../../build/mksbls;
+x86_64-w64-mingw32-gcc-win32 -mno-ms-bitfields -DWINDOWS mksbls.c -o ../../build/mksbls.exe
 gcc mkernie.c -o ../../build/mkernie;
+x86_64-w64-mingw32-gcc-win32 -mno-ms-bitfields -DWINDOWS mkernie.c -o ../../build/mkernie.exe
 gcc mkmbr.c -o ../../build/mkmbr;
+x86_64-w64-mingw32-gcc-win32 -mno-ms-bitfields -DWINDOWS mkmbr.c -o ../../build/mkmbr.exe
 gcc mkfs.c -o ../../build/mkfs;
+x86_64-w64-mingw32-gcc-win32 -mno-ms-bitfields -DWINDOWS mkfs.c -o ../../build/mkfs.exe
 cd ../../;
 
 # Custom imports because VitaSDK doesn't understand backward compat

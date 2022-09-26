@@ -442,11 +442,11 @@ while ($true) {
             $cfwimg_rmbr = '-use_e2x_recovery_mbr'
         }
 
-        Start-Process -FilePath 'wsl.exe' -ArgumentList './mkcfw', $fnameBox.Text, $cfwimg_op, $cfwimg_fw, $cfwimg_minfw, $cfwimg_maxfw, $cfwimg_type, $cfwimg_hw, $cfwimg_msg, $cfwimg_force_scu, $cfwimg_log2file, $cfwimg_req_enso, $cfwimg_rconfig, $cfwimg_rblob, $cfwimg_rmbr, $cfwimg_li, $cfwimg_ld
+        Start-Process -FilePath 'mkcfw.exe' -ArgumentList $fnameBox.Text, $cfwimg_op, $cfwimg_fw, $cfwimg_minfw, $cfwimg_maxfw, $cfwimg_type, $cfwimg_hw, $cfwimg_msg, $cfwimg_force_scu, $cfwimg_log2file, $cfwimg_req_enso, $cfwimg_rconfig, $cfwimg_rblob, $cfwimg_rmbr, $cfwimg_li, $cfwimg_ld
     }
 
     if ($result -eq [System.Windows.Forms.DialogResult]::Yes) {
-        Start-Process -FilePath 'wsl.exe' -ArgumentList './mkcfw', $fnameBox.Text, '-gui', '-i'
+        Start-Process -FilePath 'mkcfw.exe' -ArgumentList $fnameBox.Text, '-gui', '-i'
     }
 
     if ($result -eq [System.Windows.Forms.DialogResult]::Cancel) {

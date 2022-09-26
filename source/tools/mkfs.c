@@ -14,7 +14,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/stat.h>
-#include "stdbool.h"
+#include <stdbool.h>
 
 #include "../fwtool.h"
 

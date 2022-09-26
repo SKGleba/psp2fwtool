@@ -42,6 +42,85 @@ uint32_t getSz(const char* src) {
 	return sz;
 }
 
+int split(const char* src, const char* dst_format, uint32_t part_size) {
+	uint32_t full_size = getSz(src);
+	if (!full_size)
+		return -1;
+
+	void* full_file = calloc(1, full_size);
+	if (!full_file)
+		return -2;
+
+	printf("Splitting %s into 0x%08X-byte chunks\nReading... ", part_size);
+	FILE* fp = fopen(src, "rb");
+	if (!fp) {
+		free(full_file);
+		printf("FAILED\n");
+		return -3;
+	}
+	fread(full_file, full_size, 1, fp);
+	fclose(fp);
+	printf("OK\nWriting..\n");
+
+	char cur_path[32];
+	uint8_t cur_dst = 0;
+	for (uint32_t copied = 0; copied < full_size; copied += part_size) {
+		memset(cur_path, 0, 32);
+		snprintf(cur_path, 32, "%s%s%02d", src, dst_format, cur_dst);
+		fp = fopen(cur_path, "wb");
+		if (!fp) {
+			free(full_file);
+			printf("write open %s failed\n", cur_path);
+			return -4;
+		}
+		if (copied + part_size < full_size) {
+			printf("0x%08X @ %s[0x%08X] -> %s\n", part_size, src, copied, cur_path);
+			fwrite(full_file + copied, part_size, 1, fp);
+		} else {
+			printf("0x%08X @ %s[0x%08X] -> %s\n", full_size - copied, src, copied, cur_path);
+			fwrite(full_file + copied, full_size - copied, 1, fp);
+		}
+		fclose(fp);
+		cur_dst++;
+	}
+
+	free(full_file);
+
+	printf("Split %s into %d chunks\n", src, cur_dst);
+
+	return 0;
+}
+
+int append(const char* source, const char* dest) {
+	uint32_t ap_size = getSz(source);
+	if (!ap_size)
+		return -1;
+
+	void* buf = calloc(1, ap_size);
+	if (!buf)
+		return -2;
+
+	FILE* fp = fopen(source, "rb");
+	if (!fp) {
+		free(buf);
+		return -3;
+	}
+	fread(buf, ap_size, 1, fp);
+	fclose(fp);
+
+	fp = fopen(dest, "ab");
+	if (!fp) {
+		free(buf);
+		return -4;
+	}
+	fwrite(buf, ap_size, 1, fp);
+	fclose(fp);
+
+	free(buf);
+
+	return 0;
+}
+
 static uint32_t get_block_crc32_file(char* inp, uint32_t belowblock) {
 	uint8_t crcbuf[BLOCK_SIZE];
 	FILE* fp = fopen(inp, "rb");
@@ -78,6 +157,8 @@ int fat2e2x() {
 		printf("Unknown e2x size!\n");
 		return -1;
 	}
+
+	free(fatbuf);
 	return 0;
 }
 
@@ -105,11 +186,7 @@ void add_entry(FILE* fd, const char* src, uint8_t pid, pkg_toc* fwimg_toc, uint3
 	if (!gsize)
 		return;
 	gcrc = get_block_crc32_file("rawfs.gz", (gsize > BLOCK_SIZE) ? BLOCK_SIZE : gsize);
-#ifdef WINDOWS
-	system("type rawfs.gz >> fwimage.bin_part");
-#else
-	system("cat rawfs.gz >> fwimage.bin_part");
-#endif
+	append("rawfs.gz", "fwimage.bin_part");
 	unlink("rawfs.gz");
 	int target_component = 0;
 incr_comp:
@@ -157,14 +234,14 @@ void add_entry_proxy(FILE* fd, const char* src, uint8_t pid, pkg_toc* fwimg_toc,
 	}
 
 	printf("found big\n");
+
+	split(src, "_", 16777216);
+	
 	uint32_t coff = 0, csz = 0;
 	uint8_t cur = 0;
-	char cfname[16], cmdbuf[128];
-	memset(cmdbuf, 0, 128);
-	sprintf(cmdbuf, "split -b 16777216 -d %s %s_", src, src);
-	system(cmdbuf);
+	char cfname[32];
 	while (1) {
-		memset(cfname, 0, 16);
+		memset(cfname, 0, 32);
 		sprintf(cfname, "%s_%02d", src, cur);
 		printf("looking for %s\n", cfname);
 		csz = getSz(cfname);
@@ -183,14 +260,8 @@ void add_entry_proxy(FILE* fd, const char* src, uint8_t pid, pkg_toc* fwimg_toc,
 }
 
 void sync_fwimage(const char* imagepath, pkg_toc* fwimg_toc) {
-	char cmdbuf[128];
-	memset(cmdbuf, 0, 128);
-#ifdef WINDOWS
-	sprintf(cmdbuf, "type fwimage.bin_part >> %s", imagepath);
-#else
-	sprintf(cmdbuf, "cat fwimage.bin_part >> %s", imagepath);
-#endif
-	system(cmdbuf);
+	printf("Syncing fwimage...\n");
+	append("fwimage.bin_part", imagepath);
 	unlink("fwimage.bin_part");
 
 	int fp = open(imagepath, O_RDWR);
