@@ -13,6 +13,7 @@
 #include <stdint.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <stdbool.h>
 
 #include "../fwtool.h"
 #include "../kernel/crc32.c"
@@ -22,13 +23,51 @@
 #define ARRAYSIZE(x) ((sizeof(x) / sizeof(0 [x])) / ((size_t)(!(sizeof(x) % sizeof(0 [x])))))
 
 #ifdef WINDOWS
-uint32_t pread(int fd, void* buf, size_t count, off_t offset) {
-	lseek(fd, offset, SEEK_SET);
-	return read(fd, buf, count);
+#include <windows.h>
+#include <io.h>
+ssize_t pread(int fd, void* buf, size_t count, uint64_t offset) {
+	long unsigned int read_bytes = 0;
+
+	OVERLAPPED overlapped;
+	memset(&overlapped, 0, sizeof(OVERLAPPED));
+
+	overlapped.OffsetHigh = (uint32_t)((offset & 0xFFFFFFFF00000000LL) >> 32);
+	overlapped.Offset = (uint32_t)(offset & 0xFFFFFFFFLL);
+
+	HANDLE file = (HANDLE)_get_osfhandle(fd);
+	SetLastError(0);
+	bool RF = ReadFile(file, buf, count, &read_bytes, &overlapped);
+
+	// For some reason it errors when it hits end of file so we don't want to check that
+	if ((RF == 0) && GetLastError() != ERROR_HANDLE_EOF) {
+		errno = GetLastError();
+		// printf ("Error reading file : %d\n", GetLastError());
+		return -1;
+	}
+
+	return read_bytes;
 }
-uint32_t pwrite(int fd, void* buf, size_t count, off_t offset) {
-	lseek(fd, offset, SEEK_SET);
-	return write(fd, buf, count);
+ssize_t pwrite(int fd, void* buf, size_t count, uint64_t offset) {
+	long unsigned int write_bytes = 0;
+
+	OVERLAPPED overlapped;
+	memset(&overlapped, 0, sizeof(OVERLAPPED));
+
+	overlapped.OffsetHigh = (uint32_t)((offset & 0xFFFFFFFF00000000LL) >> 32);
+	overlapped.Offset = (uint32_t)(offset & 0xFFFFFFFFLL);
+
+	HANDLE file = (HANDLE)_get_osfhandle(fd);
+	SetLastError(0);
+	bool RF = WriteFile(file, buf, count, &write_bytes, &overlapped);
+
+	// For some reason it errors when it hits end of file so we don't want to check that
+	if ((RF == 0) && GetLastError() != ERROR_HANDLE_EOF) {
+		errno = GetLastError();
+		// printf ("Error reading file : %d\n", GetLastError());
+		return -1;
+	}
+
+	return write_bytes;
 }
 #endif
 
