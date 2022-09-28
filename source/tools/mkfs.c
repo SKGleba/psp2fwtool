@@ -457,9 +457,16 @@ void y_tractor(char* source_dir, char* dest) {
     }
 }
 
-void mounter(bool do_mount, char* device, char* dest, char* partition, bool active) {
+static const char* win_mountpoints_list[2] = { "XXXIKLOTMABSUXVX", "YYYJFEQDNPRGHYWY" };
+void mounter(bool do_mount, char* device, char* dest, char* partition, bool active, char *rw_str) {
+#ifndef WINDOWS
     mkdir_proxy(dest, 0777);
-    
+#endif
+
+    int rw = 0;
+    if (strcmp("rw", rw_str) == 0)
+        rw = 1;
+
     uint8_t req_id = 0;
     if (partition)
         req_id = partition_name2id(partition);
@@ -488,30 +495,59 @@ void mounter(bool do_mount, char* device, char* dest, char* partition, bool acti
         if (partition && (p->code != req_id || p->active != !(!active)))
             continue;
 
-        if (p->code < SCEMBR_PART_KERNEL)
+        if (!(p->code) || !(p->type) || (p->type == SCEMBR_FS_RAW))
             continue;
 
         memset(mount_path, 0, 448);
+#ifdef WINDOWS
+        char tmp_char;
+        if (dest) {
+            if (partition) {
+                tmp_char = *(char*)dest;
+                snprintf(mount_path, 448, "%s", &tmp_char);
+            } else {
+                tmp_char = *(char*)(dest + (p->active * 0x10) + p->code);
+                snprintf(mount_path, 448, "%s:", &tmp_char);
+            }
+        } else {
+            tmp_char = *(char*)(win_mountpoints_list[p->active] + p->code);
+            snprintf(mount_path, 448, "%s:", &tmp_char);
+        }
+#else
         snprintf(mount_path, 448, "%s/%s-%d", dest, pcode_str[p->code], p->active);
-        
-        if (do_mount) {
-            printf("Mounting 0x%08X to %s\n", p->off, mount_path);
-            
-            mkdir_proxy(mount_path, 0777);
+#endif
 
+        if (do_mount) {
+            printf("Mounting %s%s [0x%08X] to %s\n", pcode_str[p->code], p->active ? "-act" : "-ina", p->off, mount_path);
+
+#ifndef WINDOWS
+            mkdir_proxy(mount_path, 0777);
+#endif
+
+            memset(cmd, 0, 1024);
+#ifdef WINDOWS
+            snprintf(cmd, 1024, "osfmount -a -t file -o %s -b %db -s %db -f %s -m %s", rw ? "rw" : "ro", p->off, p->sz, device, mount_path);
+#else
             uint64_t offset = p->off;
             uint64_t size = p->sz;
-            memset(cmd, 0, 1024);
-            snprintf(cmd, 1024, "mount -o offset=0x%X,sizelimit=0x%X %s %s", offset, size, device, mount_path);
+            offset *= 0x200;
+            size *= 0x200;
+            snprintf(cmd, 1024, "mount -o %soffset=0x%llX,sizelimit=0x%llX %s %s", rw ? "" : "ro,", offset, size, device, mount_path);
+#endif
             system(cmd);
         } else {
-            printf("uMounting 0x%08X from %s\n", p->off, mount_path);
+            printf("uMounting %s%s [0x%08X] from %s\n", pcode_str[p->code], p->active ? "-act" : "-ina", p->off, mount_path);
 
             memset(cmd, 0, 1024);
+#ifdef WINDOWS
+            snprintf(cmd, 1024, "osfmount -D -m %s", mount_path);
+#else
             snprintf(cmd, 1024, "umount %s", mount_path);
+#endif
             system(cmd);
-
+#ifndef WINDOWS
             rmdir(mount_path);
+#endif
         }
     }
 }
@@ -602,8 +638,13 @@ int main(int argc, char* argv[]) {
         printf("modes:\n");
         printf(" 'mkmbr' : use the embedded mkmbr tool\n");
         printf(" 'info [dev]' : display info about the [dev] device/dump\n");
-#ifndef WINDOWS
-        printf(" 'mount [dev] [dest] <p> <a>' : mount [dev] partitions to the [dest] directory\n");
+#ifdef WINDOWS
+        printf(" 'mount [dev] [ro/rw] [dest] [p] <a>' : mount [dev] [p]artition to the [dest] mountpoint\n");
+        printf(" 'umount [dev] [dest] [p] <a>' : umount [dev] [p]artition from the [dest] mountpoint\n");
+        printf(" 'mount [dev] [ro/rw] <list>' : mount [dev] partitions to mountpoint list %s%s\n", win_mountpoints_list[0], win_mountpoints_list[1]);
+        printf(" 'umount [dev] <list>' : umount [dev] partitions from mountpoint list %s%s\n", win_mountpoints_list[0], win_mountpoints_list[1]);
+#else
+        printf(" 'mount [dev] [ro/rw] [dest] <p> <a>' : mount [dev] partitions to the [dest] directory\n");
         printf(" 'umount [dev] [dest] <p> <a>' : umount [dev] partitions from the [dest] directory\n");
 #endif
         printf(" 'unpack [dev] [dest]' : unpack [dev] partitions to the [dest] directory\n");
@@ -622,6 +663,10 @@ int main(int argc, char* argv[]) {
             printf(" '%s',", pcode_str[i]);
         }
         printf(" 'mbr', 'rpoint_mbr', 'enso', 'emumbr'\n");
+#ifdef WINDOWS
+        printf("\nnotes (windows):\n");
+        printf(" [mount/umount] command requires the OSFMount v1.4+ install directory in PATH\n\n");
+#endif
         return -1;
     }
 
@@ -630,9 +675,9 @@ int main(int argc, char* argv[]) {
     else if (strcmp("info", argv[1]) == 0)
         info(argv[2]);
     else if (strcmp("mount", argv[1]) == 0)
-        mounter(true, argv[2], argv[3], (argc >= 5) ? argv[4] : NULL, (argc == 6) ? true : false);
+        mounter(true, argv[2], argv[4], (argc >= 6) ? argv[5] : NULL, (argc == 7) ? true : false, argv[3]);
     else if (strcmp("umount", argv[1]) == 0)
-        mounter(false, argv[2], argv[3], (argc >= 5) ? argv[4] : NULL, (argc == 6) ? true : false);
+        mounter(false, argv[2], (argc >= 4) ? argv[3] : NULL, (argc >= 5) ? argv[4] : NULL, (argc == 6) ? true : false, "ro");
     else if (strcmp("strip", argv[1]) == 0)
         stripper(argv[2], argv[3]);
     else if (strcmp("pack", argv[1]) == 0)
