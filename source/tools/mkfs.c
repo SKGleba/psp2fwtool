@@ -504,7 +504,7 @@ void mounter(bool do_mount, char* device, char* dest, char* partition, bool acti
         if (dest) {
             if (partition) {
                 tmp_char = *(char*)dest;
-                snprintf(mount_path, 448, "%s", &tmp_char);
+                snprintf(mount_path, 448, "%s:", &tmp_char);
             } else {
                 tmp_char = *(char*)(dest + (p->active * 0x10) + p->code);
                 snprintf(mount_path, 448, "%s:", &tmp_char);
@@ -634,8 +634,9 @@ void info(char* path) {
 int main(int argc, char* argv[]) {
 
     if (argc < 2) {
-        printf("\nusage: %s [mode] [dev] <...>\n\n", argv[0]);
-        printf("modes:\n");
+        printf("\n-------------------\n> mkfs by skgleba <\n-------------------\n");
+        printf("\nusage: %s [mode] [dev] <...>\n", argv[0]);
+        printf("\nmodes:\n");
         printf(" 'mkmbr' : use the embedded mkmbr tool\n");
         printf(" 'info [dev]' : display info about the [dev] device/dump\n");
 #ifdef WINDOWS
@@ -652,12 +653,12 @@ int main(int argc, char* argv[]) {
         printf(" 'extract [dev] [dest] [partition] <active>' : extract [partition] from [dev] to the [dest] directory\n");
         printf(" 'replace [dev] [src] [partition] <active>' : replace [partition] in [dev] with one from [src] directory\n");
         printf(" 'strip [rpoint] [dev]' : convert fwtool restore point -> raw EMMC image\n");
-        printf("supported devices/formats:\n");
+        printf("\nsupported devices/formats:\n");
         printf(" EMMC device or dump\n");
         printf(" GameCard device or dump\n");
         printf(" Sony MC device or dump\n");
         printf(" FWTOOL restore point (only info/unpack/extract/strip)\n");
-        printf("supported partitions:\n");
+        printf("\nsupported partitions:\n");
         for (int i = 1; i < 16; i++) {
             if (i == 11) printf("\n");
             printf(" '%s',", pcode_str[i]);
@@ -665,8 +666,10 @@ int main(int argc, char* argv[]) {
         printf(" 'mbr', 'rpoint_mbr', 'enso', 'emumbr'\n");
 #ifdef WINDOWS
         printf("\nnotes (windows):\n");
-        printf(" [mount/umount] command requires the OSFMount v1.4+ install directory in PATH\n\n");
+        printf(" [mount/umount] command requires the OSFMount v1.4+ install directory in PATH\n");
+        printf(" [mount/umount] command requires mkfs to be run as administrator\n");
 #endif
+        printf("\n");
         return -1;
     }
 
@@ -675,9 +678,9 @@ int main(int argc, char* argv[]) {
     else if (strcmp("info", argv[1]) == 0)
         info(argv[2]);
     else if (strcmp("mount", argv[1]) == 0)
-        mounter(true, argv[2], argv[4], (argc >= 6) ? argv[5] : NULL, (argc == 7) ? true : false, argv[3]);
+        mounter(true, argv[2], argv[4], (argc >= 6) ? argv[5] : NULL, (argc == 7 && (*(char*)argv[6] == 'a' || *(char*)argv[6] == '1')), argv[3]);
     else if (strcmp("umount", argv[1]) == 0)
-        mounter(false, argv[2], (argc >= 4) ? argv[3] : NULL, (argc >= 5) ? argv[4] : NULL, (argc == 6) ? true : false, "ro");
+        mounter(false, argv[2], (argc >= 4) ? argv[3] : NULL, (argc >= 5) ? argv[4] : NULL, (argc == 6 && (*(char*)argv[5] == 'a' || *(char*)argv[5] == '1')), "ro");
     else if (strcmp("strip", argv[1]) == 0)
         stripper(argv[2], argv[3]);
     else if (strcmp("pack", argv[1]) == 0)
@@ -685,9 +688,9 @@ int main(int argc, char* argv[]) {
     else if (strcmp("unpack", argv[1]) == 0)
         x_tractor(argv[2], NULL, argv[3], 0, 0);
     else if (strcmp("extract", argv[1]) == 0)
-        x_tractor(argv[2], argv[4], argv[3], argc > 5, 0);
+        x_tractor(argv[2], argv[4], argv[3], (argc > 5 && (*(char*)argv[5] == 'a' || *(char*)argv[5] == '1')), 0);
     else if (strcmp("replace", argv[1]) == 0)
-        x_tractor(argv[2], argv[4], argv[3], argc > 5, 1);
+        x_tractor(argv[2], argv[4], argv[3], (argc > 5 && (*(char*)argv[5] == 'a' || *(char*)argv[5] == '1')), 1);
 
     return 0;
 }

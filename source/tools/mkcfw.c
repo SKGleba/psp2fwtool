@@ -90,7 +90,8 @@ int split(const char* src, const char* dst_format, uint32_t part_size) {
 	if (!full_file)
 		return -2;
 
-	printf("Splitting %s into 0x%08X-byte chunks\nReading... ", part_size);
+	printf("Splitting %s into 0x%08X-byte chunks\nReading... ", src, part_size);
+	
 	FILE* fp = fopen(src, "rb");
 	if (!fp) {
 		free(full_file);
@@ -566,29 +567,32 @@ void parse_list(char* list, char* out) {
 	}
 }
 
+void print_usage(char *me);
+
 int main(int argc, char* argv[]) {
 
 	if (argc < 3) {
-		printf("\nusage: %s [fwimage] [opt]\n", argv[0]);
+		print_usage(argv[0]);
 		return -1;
 	}
 
 	uint8_t target_type = FWTARGET_SAFE, force_scu = 0, req_enso = 0, log2file = 0;
-	uint32_t pup_fw = 0, fwimg_fw = 0, hw_type = 0, hw_mask = 0, pkg_mask = 0, min_fw = 0, max_fw = 0;
-	char* build_info = NULL, * gui_image_list = NULL, * gui_devfw_list = NULL, gui_all_list[SCEMBR_PART_UNUSED + DEV_NODEV + 2];
+	uint32_t fwimg_fw = 0, hw_type = 0, hw_mask = 0, pkg_mask = 0, min_fw = 0, max_fw = 0;
+	char* build_info = NULL, * gui_image_list = NULL, * gui_devfw_list = NULL, used_list[SCEMBR_PART_UNUSED + DEV_NODEV + 2];
 	int gui = 0, create_pup = 0, gui_use_enso = 0, use_e2x_rconfig = 0, use_e2x_rblob = 0, use_e2x_rmbr = 0;
 
-	memset(gui_all_list, 0, sizeof(gui_all_list));
+	memset(used_list, 0, sizeof(used_list));
 
 	// opt
 	for (int i = 2; i < argc; i++) {
 		printf("argv: %s\n", argv[i]);
-		if (!strcmp("-t", argv[i])) {
+		if (!strcmp("-target", argv[i])) {
 			i = i + 1;
-			target_type = (uint8_t)atoi(argv[i]);
-			if (target_type > FWTARGET_SAFE)
-				target_type = FWTARGET_SAFE;
-		} else if (!strcmp("-i", argv[i])) {
+			for (int t = FWTARGET_EMU; t < (FWTARGET_SAFE + 1); t++) {
+				if (!strcmp(target_dev[t], argv[i]))
+					target_type = t;
+			}
+		} else if (!strcmp("-info", argv[i])) {
 			read_image(argv[1]);
 			if (!gui)
 				return 0;
@@ -600,15 +604,13 @@ int main(int argc, char* argv[]) {
 			while (1) {};
 		} else if (!strcmp("-gp", argv[i])) {
 			i = i + 1;
-			pup_fw = (uint32_t)strtoul((argv[i] + 2), NULL, 16);
-			if (!gui && getSz(argv[1])) {
-				fwimg2pup(argv[1], "psp2swu.self", "cui_setupper.self", "patches_all.zip", "patches_vita.zip", "patches_dolce.zip", "pupinfo.txt", "PSP2UPDAT.PUP", pup_fw);
-				if (!gui)
-					return 0;
+			if (getSz(argv[1])) {
+				fwimg2pup(argv[1], "psp2swu.self", "cui_setupper.self", "patches_all.zip", "patches_vita.zip", "patches_dolce.zip", "pupinfo.txt", "PSP2UPDAT.PUP", (uint32_t)strtoul((argv[i] + 2), NULL, 16));
 				while (1) {};
 			}
+		} else if (!strcmp("-pup", argv[i]))
 			create_pup = 1;
-		} else if (!strcmp("-fw", argv[i])) {
+		else if (!strcmp("-fw", argv[i])) {
 			i = i + 1;
 			fwimg_fw = (uint32_t)strtoul((argv[i] + 2), NULL, 16);
 		} else if (!strcmp("-msg", argv[i])) {
@@ -648,6 +650,18 @@ int main(int argc, char* argv[]) {
 			use_e2x_rblob = 1;
 		else if (!strcmp("-use_e2x_recovery_mbr", argv[i]))
 			use_e2x_rmbr = 1;
+		else if (*(char*)argv[i] == '+') {
+			if (!strcmp(argv[i] + 1, "enso"))
+				used_list[SCEMBR_PART_EMPTY] = 1;
+			for (int p = SCEMBR_PART_SBLS; p < SCEMBR_PART_UNUSED; p++) {
+				if (!strcmp(argv[i] + 1, pcode_str[p]))
+					used_list[p] = 1;
+			}
+			for (int d = DEV_SYSCON_FW; d < DEV_NODEV; d++) {
+				if (!strcmp(argv[i] + 1, dcode_str[d]))
+					used_list[0x10 + d] = 1;
+			}
+		}
 	}
 
 	unlink(argv[1]);
@@ -659,9 +673,9 @@ int main(int argc, char* argv[]) {
 			while (1) {};
 		}
 		if (gui_image_list)
-			parse_list(gui_image_list, gui_all_list);
+			parse_list(gui_image_list, used_list);
 		if (gui_devfw_list)
-			parse_list(gui_devfw_list, &gui_all_list[0x10]);
+			parse_list(gui_devfw_list, &used_list[0x10]);
 	}
 
 	printf("opening %s\n", argv[1]);
@@ -695,7 +709,7 @@ int main(int argc, char* argv[]) {
 	// add partitions
 	printf("add_images [emmc]\n");
 	for (int i = SCEMBR_PART_SBLS; i < SCEMBR_PART_UNUSED; i -= -1) {
-		if (!gui || gui_all_list[i]) {
+		if (used_list[i]) {
 			memset(cfname, 0, 32);
 			sprintf(cfname, "%s.img", pcode_str[i]);
 			add_entry_proxy(fd, cfname, i, &fwimg_toc, pkg_mask, 0, 0);
@@ -703,7 +717,7 @@ int main(int argc, char* argv[]) {
 	}
 
 	// add enso_ex
-	if (!gui || gui_all_list[0]) {
+	if (used_list[0]) {
 		printf("add_images [enso_ex]\n");
 		if (!fat2e2x())
 			add_entry(fd, "slim.e2x", 0, &fwimg_toc, 0x400, fwimg_fw, 0);
@@ -729,7 +743,7 @@ int main(int argc, char* argv[]) {
 
 	// add devices
 	for (int i = DEV_SYSCON_FW; i < DEV_NODEV; i -= -1) {
-		if (!gui || gui_all_list[i + 0x10]) {
+		if (used_list[i + 0x10]) {
 			printf("add_images [%s]\n", dcode_str[i]);
 			for (uint8_t z = 0; z < 0xFF; z -= -1) {
 				memset(cfname, 0, 32);
@@ -754,11 +768,99 @@ int main(int argc, char* argv[]) {
 	sync_fwimage(argv[1], &fwimg_toc);
 	
 	if (create_pup)
-		fwimg2pup(argv[1], "psp2swu.self", "cui_setupper.self", "patches_all.zip", "patches_vita.zip", "patches_dolce.zip", "pupinfo.txt", "PSP2UPDAT.PUP", pup_fw);
+		fwimg2pup(argv[1], "psp2swu.self", "cui_setupper.self", "patches_all.zip", "patches_vita.zip", "patches_dolce.zip", "pupinfo.txt", "PSP2UPDAT.PUP", fwimg_fw);
 
 	printf("\nfinished: %s\n", argv[1]);
-	
-	while (1) {};
-	
+
+	if (gui) {
+		while (1) {};
+	}
+
 	return 0;
+}
+
+void print_usage(char* me) {
+	printf("\n--------------------------------------\n> mkcfw for %s <\n--------------------------------------\n", FWTOOL_VERSION_STR);
+	printf("\nusage: %s [fwimage] [-options] <+images> <+fwupgrades>\n", me);
+	printf("\nfwimage options:\n");
+	printf("'-info' : display fwimage info\n");
+	printf("\n");
+	printf("'-fw VERSION' : u32h version displayed in fwtool\n e.g. '-fw 0x03650000'\n default 0x00000000\n");
+	printf("\n");
+	printf("'-msg INFO' : build info displayed in fwtool\n e.g. '-msg \"my first 3.65 cex repack\"'\n default n/a\n");
+	printf("\n");
+	printf("'-hw HWINFO MASK' : required target u32h HWINFO, checked against target hwinfo & MASK\n e.g. '-hw 0x00703030 0x00FFFFFF' : pstvs version 1\n default 0 0 : all units/not checked\n");
+	printf("\n");
+	printf("'-target TARGET' : required target unit type\n 'TARGET' being one of:\n");
+	printf("   'TEST' : Emulator\n");
+	printf("   'DEVTOOL' : Development Kit\n");
+	printf("   'DEX' : Testing Kit\n");
+	printf("   'CEX' : Retail unit\n");
+	printf("   'UNKQA' : Unknown/FWTOOLQA\n");
+	printf("   'ALL' : All units (use with caution!)\n");
+	printf("   'NOCHK' : All units, 'safe' - no component/criticalfs updates\n");
+	printf(" e.g. '-target CEX' : only retail units can install this image\n default NOCHK\n");
+	printf("\n");
+	printf("'-min_fw VERSION' : minimum u32h firmware version the image can be installed on\n e.g. '-min_fw 0x03600000' : only consoles running fw 3.60 or higher can install this fwimage\n default 0x00000000 : no lower firmware bound\n");
+	printf("\n");
+	printf("'-max_fw VERSION' : maximum u32h firmware version the image can be installed on\n e.g. '-min_fw 0x03740000' : only consoles running fw 3.74 or lower can install this fwimage\n default 0x00000000 : no upper firmware bound\n");
+	printf("\n");
+	printf("'-force_component_update' : ignores the version checks on component upgrades\n");
+	printf("\n");
+	printf("'-require_enso' : only units with an active enso hack can install this fwimage\n");
+	printf("\n");
+	printf("'-use_file_logging' : log kernel stdout to %s\n", LOG_LOC);
+	printf("\n");
+	printf("'-pup' : create a (N)PUP from the resulting fwimage\n additional PUP components:\n");
+	printf("   'pupinfo.txt' : disclaimer displayed before PUP install, optional\n");
+	printf("   'patches_all.zip' : partition patches for all units, optional\n");
+	printf("   'patches_vita.zip' : partition patches for vita units, optional\n");
+	printf("   'patches_dolce.zip' : partition patches for pstv units, optional\n");
+	printf("   'psp2swu.self' : PUP installer, provided by fwtool, mandatory\n");
+	printf("   'cui_setupper.self' : PUP installer (nbh), provided by fwtool, optional\n");
+	printf("\n");
+	printf("\nadding partition images to fwimage:\n");
+	printf("'+enso' : will use enso image @ enso.bin\n");
+	for (int i = SCEMBR_PART_SBLS; i < SCEMBR_PART_UNUSED; i++)
+		printf("'+%s' : will use %s image @ %s.img\n", pcode_str[i], pcode_str[i], pcode_str[i]);
+	printf("\n");
+	printf("\nadding component upgrades to fwimage (XX is a 2-digit ID starting at 00):\n");
+	for (int i = DEV_SYSCON_FW; i < DEV_NODEV; i++) {
+		if (i == DEV_RESERVED)
+			i++;
+		printf("'+%s' : will use raw %s upgrades @ %s-XX.bin and spkgs @ %s-XX.pkg\n", dcode_str[i], dcode_str[i], dcode_str[i], dcode_str[i]);
+	}
+	printf("\n");
+	printf("\nnotes:\n");
+	printf(" - make sure that enso version matches the slb2's version\n");
+	printf("\n");
+	printf("\nexample case 1 - All-in-one 3.65 CFW NPUP:\n");
+	printf("setup:\n");
+	printf(" - enso_ex v5 for 3.65 as enso.bin\n");
+	printf(" - slb2 extracted from a 3.65 PUP as slb2.img\n");
+	printf(" - os0 extracted from a 3.65 PUP as os0.img\n");
+	printf(" - vs0 extracted from a 3.65 PUP as vs0.img\n");
+	printf(" - psp2swu.self provided by fwtool\n");
+	printf(" - pupinfo.txt containing some disclaimer and author info\n");
+	printf(" - patches_all.zip containing:\n   - os0-patch/ with the enso_ex os0 modules\n   - ur0-patch/ with taihen and henkaku\n");
+	printf(" - patches_vita.zip containing:\n   - vs0-patch/ with the extracted vs0 vita tarpatch\n   - ur0-patch/ with vita-specific taihen config and plugins\n");
+	printf(" - patches_dolce.zip containing:\n   - vs0-patch/ with the extracted vs0 pstv tarpatch\n   - ur0-patch/ with pstv-specific taihen config and plugins\n");
+	printf("command:\n %s psp2cfw -fw 0x03650000 -msg \"AIO 3.65 CFW setup sample\" -target CEX -pup +enso +slb2 +os0 +vs0\n", me);
+	printf("result: a PUP that can be installed with any modoru version on retail PS Vita/TV units.\n");
+	printf("\nexample case 2 - Syscon CFW collection NPUP:\n");
+	printf("setup:\n");
+	printf(" - slim syscon cfw as syscon_fw-00.bin and its PUP spkg as syscon_fw-00.pkg\n");
+	printf(" - phat syscon cfw as syscon_fw-01.bin and its PUP spkg as syscon_fw-01.pkg\n");
+	printf(" - pstv syscon cfw as syscon_fw-02.bin and its PUP spkg as syscon_fw-02.pkg\n");
+	printf(" - devkit syscon cfw as syscon_fw-03.bin and its PUP spkg as syscon_fw-03.pkg\n");
+	printf(" - psp2swu.self and cui_setupper.self provided by fwtool\n");
+	printf(" - pupinfo.txt containing some disclaimer and author info\n");
+	printf("command:\n %s psp2cfw -fw 0x03650000 -msg \"ernie cfw sample\" -target ALL -pup -force_component_update -require_enso -min_fw 0x03600000 +syscon_fw\n", me);
+	printf("result: a 3.60+ PUP requiring enso that can be installed with any modoru version as well as neighbourhood.\n");
+	printf("\nexample case 3 - DevKit 3.65 full->cexfortool via fwimage:\n");
+	printf("setup:\n");
+	printf(" - vs0 extracted from a 3.65 CFT PUP as vs0.img\n");
+	printf("command:\n %s psp2cfw -fw 0x03650000 -msg \"3.65 cexfortool vs0\" -target NOCHK -hw 0x00416000 0x00FFFF00 -min_fw 0x03650000 -max_fw 0x03650011 +vs0\n", me);
+	printf("result: a 3.65-only fwimage requiring devkit hwinfo, installable with the fwtool app\n");
+	printf("\n");
 }

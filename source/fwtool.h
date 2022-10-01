@@ -19,7 +19,7 @@
 #define FSP_BUF_SZ_BYTES (FSP_BUF_SZ_BLOCKS * BLOCK_SIZE)
 
 // fwtool------------------------
-#define FWTOOL_VERSION_STR "FWTOOL v1.4.1 by SKGleba"
+#define FWTOOL_VERSION_STR "FWTOOL v1.4.1 by skgleba"
 #define LOG_LOC "ux0:data/fwtool.log"
 #define FWTOOL_MINFW 0x03600000
 #define FWTOOL_MAXFW 0x03740011

@@ -275,6 +275,7 @@ int mkmbr_fullMain(int argc, char* argv[]) {
 int mkmbr_main(int argc, char* argv[]) {
 
 	if (argc < 4) {
+		printf("\n--------------------\n> mkmbr by skgleba <\n--------------------\n");
 		printf("\nusage: %s [scembr] [slot] [opt ..]\n\n", argv[0]);
 		printf("[scembr] = dumped SCE MBR (512B) or user partition table (128B)\n");
 		printf("[slot] = partition slot number or 'all' to list all slots\n");
@@ -310,6 +311,6 @@ int mkmbr_main(int argc, char* argv[]) {
 
 #ifndef MKMBR_SLAVE
 int main(int argc, char* argv[]) {
-	return main(argc, argv);
+	return mkmbr_main(argc, argv);
 }
 #endif

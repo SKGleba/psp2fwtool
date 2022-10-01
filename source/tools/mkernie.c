@@ -408,6 +408,7 @@ int main(int argc, char* argv[]) {
         return selftest();
     
     if (argc < 6 && (argc < 4 || (strcmp("list", argv[1]) && strcmp("convert", argv[1])))) {
+        printf("\n----------------------\n> mkernie by skgleba <\n----------------------\n");
         printf("\nusage: %s [decrypt | repack | encrypt | list | convert | diff] [files] [opt params]\n", argv[0]);
         printf("file args:\n -enc FILE => encrypted syscon update\n -dec FILE => decrypted syscon update\n");
         printf("repack params:\n -ref FILE => encrypted syscon update, will use its params\n");

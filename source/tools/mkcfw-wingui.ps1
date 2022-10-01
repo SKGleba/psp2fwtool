@@ -345,14 +345,14 @@ while ($true) {
 
     if ($result -eq [System.Windows.Forms.DialogResult]::OK) {
         $cfwimg_fw = '-fw ' + $fwBox.Text
-        $cfwimg_type = '-t ' + $fwType.SelectedIndex
+        $cfwimg_type = '-target ' + $fwType.SelectedIndex
         $cfwimg_minfw = '-min_fw ' + $fw_min_Box.Text
         $cfwimg_maxfw = '-max_fw ' + $fw_max_Box.Text
         $cfwimg_hw = '-hw ' + $hw_rev_Box.Text + ' ' + $hw_mask_Box.Text
         $cfwimg_msg = '-msg ' + $info_Box.Text
         $cfwimg_op = '-gui'
         if ($gp_cbox.Checked) {
-            $cfwimg_op = $cfwimg_op + ' -gp ' + $fwBox.Text
+            $cfwimg_op = $cfwimg_op + ' -pup'
         }
 
         $cfwimg_li = '-li '
@@ -446,7 +446,7 @@ while ($true) {
     }
 
     if ($result -eq [System.Windows.Forms.DialogResult]::Yes) {
-        Start-Process -FilePath 'mkcfw.exe' -ArgumentList $fnameBox.Text, '-gui', '-i'
+        Start-Process -FilePath 'mkcfw.exe' -ArgumentList $fnameBox.Text, '-gui', '-info'
     }
 
     if ($result -eq [System.Windows.Forms.DialogResult]::Cancel) {

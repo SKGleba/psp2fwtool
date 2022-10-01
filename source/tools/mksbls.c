@@ -200,6 +200,7 @@ int sbls_unpack(const char *file) {
 
 int main(int argc, char* argv[]) {
     if (argc < 3) {
+        printf("\n---------------------\n> mksbls by skgleba <\n---------------------\n");
         printf("\nusage: %s [file] [mode] [...]\n", argv[0]);
         return -1;
     }
