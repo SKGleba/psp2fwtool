@@ -188,7 +188,7 @@ add_custom_target(compile_app.velf ALL
 )
 
 add_custom_target(compile_eboot.bin ALL
-	COMMAND vita-make-fself -c compile_app.velf compile_eboot.bin
+	COMMAND vita-make-fself -a 0x2808000000000000 -c compile_app.velf compile_eboot.bin
 )
 
 add_dependencies(compile_app.elf compile_fwtool.skprx)
