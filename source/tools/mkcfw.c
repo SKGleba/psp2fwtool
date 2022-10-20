@@ -1,6 +1,6 @@
 /* THIS FILE IS A PART OF PSP2FWTOOL
  *
- * Copyright (C) 2019-2021 skgleba
+ * Copyright (C) 2019-2022 skgleba
  *
  * This software may be modified and distributed under the terms
  * of the MIT license.  See the LICENSE file for details.
@@ -18,7 +18,7 @@
 #include "../fwtool.h"
 #include "../kernel/crc32.c"
 
- //misc--------------------
+//misc--------------------
 #define ALIGN_SECTOR(s) ((s + (BLOCK_SIZE - 1)) & -BLOCK_SIZE) // align (arg) to BLOCK_SIZE
 #define ARRAYSIZE(x) ((sizeof(x) / sizeof(0 [x])) / ((size_t)(!(sizeof(x) % sizeof(0 [x])))))
 
@@ -588,9 +588,13 @@ int main(int argc, char* argv[]) {
 		printf("argv: %s\n", argv[i]);
 		if (!strcmp("-target", argv[i])) {
 			i = i + 1;
-			for (int t = FWTARGET_EMU; t < (FWTARGET_SAFE + 1); t++) {
-				if (!strcmp(target_dev[t], argv[i]))
-					target_type = t;
+			if (gui)
+				target_type = *(uint8_t *)(argv[i]) - 0x30;
+			else {
+				for (int t = FWTARGET_EMU; t < (FWTARGET_SAFE + 1); t++) {
+					if (!strcmp(target_dev[t], argv[i]))
+						target_type = t;
+				}
 			}
 		} else if (!strcmp("-info", argv[i])) {
 			read_image(argv[1]);
