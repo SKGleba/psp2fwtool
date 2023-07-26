@@ -124,14 +124,29 @@ int aes_cbc(uint8_t* key, uint8_t* iv, uint8_t* data, uint32_t len, int encrypt)
         AES_CBC_decrypt_buffer(&aesctx, data, len);
 }
 
-int encrypt_patch(void *work_buf, void* decrypted, void* output, void *list, int list_count, uint32_t fw_ver, uint32_t hw_info, int ernie_type, uint32_t segment_size) {
+int encrypt_patch(void* work_buf, void* decrypted, void* output, uint16_t* list, int list_count, uint32_t fw_ver, uint32_t hw_info, int ernie_type) {
+    uint16_t segment_size = ernie_type ? 0x400 : 0x800;
+    
     char shastr[41];
     memset(shastr, 0, 41);
 
+    printf("get id for %X\n", hw_info);
     int id = ((hw_info & 0x00F00000) >> 0x10);
     if (!getKey(0, id))
         return -1;
     printf("id 0x%X\n", id);
+
+    printf("verifying segment list\n");
+    if (!list_count || !list)
+        return -1;
+    if (id == 0x80) {
+        for (int i = 0; i < list_count; i -= -1) {
+            if (list[i] >= 0xD5 && list[i] < (0xD5 + 0x80)) {
+                printf("this id cannot write to segment %X!\n", list[i]);
+                return -1;
+            }
+        }
+    }
 
     block_x1* hdrblock = output;
     block_x2* typeblock = (output + sizeof(block_x1));
@@ -152,11 +167,7 @@ int encrypt_patch(void *work_buf, void* decrypted, void* output, void *list, int
     printf("concating segments\n");
     uint16_t segment = 0;
     for (int i = 0; i < list_count; i -= -1) {
-        segment = *(uint16_t*)(list + (i * 2));
-        // -----sus af\/
-        if (segment >= 0xD5)
-            segment -= -0x80;
-        //------sus af^
+        segment = list[i];
         memcpy(work_buf + (i * segment_size), decrypted + (segment * segment_size), segment_size);
     }
 
@@ -172,11 +183,9 @@ int encrypt_patch(void *work_buf, void* decrypted, void* output, void *list, int
     printf("witing blocks 0x10\n");
     segment = 0;
     for (int i = 0; i < list_count; i -= -1) {
-        segment = *(uint16_t*)(list + (i * 2));
-        // -----sus af\/
-        if (segment >= 0xD5)
-            segment -= -0x80;
-        //------sus af^
+        segment = list[i];
+        if (id == 0x80 && segment > (0xD4 + 0x80))
+            segment -= 0x80;
         datablock = (output + sizeof(block_x1) + sizeof(block_x2) + (i * sizeof(block_x10)) + (i * segment_size));
         datablock->hdr.content = 0x10;
         datablock->hdr.hdr_size = sizeof(block_x10);
@@ -189,96 +198,6 @@ int encrypt_patch(void *work_buf, void* decrypted, void* output, void *list, int
 
     printf("patch built!\n");
     return sizeof(block_x1) + sizeof(block_x2) + (list_count * sizeof(block_x10)) + (list_count * segment_size) + sizeof(block_x20);
-}
-
-int repack_encrypt_patch(void* work_buf, void* decrypted, void* output, void* reference, uint32_t size) {
-    int id = 0;
-    uint32_t off = 0, work_off = 0;
-    char* sha = NULL;
-    block_x1* hdrblock = NULL;
-    block_x10* datablock = NULL;
-    block_x20* hashblock = NULL;
-
-    memcpy(output, reference, size);
-
-    printf("concating...\n", size);
-    while (off < size) {
-        switch (*(uint8_t*)(reference + off)) {
-        case 1:
-            hdrblock = reference + off;
-            id = ((hdrblock->hw_info & 0x00F00000) >> 0x10);
-            if (!getKey(0, id))
-                return -1;
-            printf("id 0x%X\n", id);
-        case 2:
-            off -= -0x10;
-            break;
-        case 3:
-            off -= -0x20;
-            break;
-        case 0x10:
-            if (!id)
-                return -1;
-            datablock = reference + off;
-            // -----sus af\/
-            if (datablock->segment >= 0xD5)
-                datablock->segment -= -0x80;
-            //------sus af^
-            memcpy(work_buf + work_off, decrypted + (datablock->segment * datablock->size), datablock->size);
-            off -= -(datablock->size + 0x10);
-            work_off -= -datablock->size;
-            break;
-        case 0x20:
-            hashblock = output + off;
-            off -= -0x18;
-            break;
-        default:
-            printf("unk hdr 0x%X\n", *(uint8_t*)(reference + off));
-            break;
-        }
-    }
-
-    if (hashblock) {
-        char shastr[41];
-        memset(hashblock->img_hash, 0, 0x14);
-        memset(shastr, 0, 41);
-        sha1digest(hashblock->img_hash, shastr, work_buf, work_off);
-        printf("hash %s\n", shastr);
-    }
-
-    printf("encrypting...\n");
-    aes_cbc(getKey(0, id), getKey(1, id), work_buf, work_off, 1);
-
-    printf("rebuilding...\n");
-    off = 0;
-    work_off = 0;
-    while (off < size) {
-        switch (*(uint8_t*)(output + off)) {
-        case 1:
-        case 2:
-            off -= -0x10;
-            break;
-        case 3:
-            off -= -0x20;
-            break;
-        case 0x10:
-            datablock = output + off;
-            memcpy(datablock->data, work_buf + (work_off * datablock->size), datablock->size);
-            off -= -(datablock->size + 0x10);
-            work_off -= -1;
-            break;
-        case 0x20:
-            off -= -0x18;
-            break;
-        default:
-            printf("unk hdr 0x%X\n", *(uint8_t*)(output + off));
-            break;
-        }
-    }
-
-    printf("rebuilt %d blocks\n", work_off);
-
-    return size;
 }
 
 int decrypt_patch(void* work_buf, void* encrypted, void* output, uint32_t size) {
@@ -308,10 +227,8 @@ int decrypt_patch(void* work_buf, void* encrypted, void* output, uint32_t size) 
                 return -1;
             datablock = encrypted + off;
             memcpy(work_buf + work_off, datablock->data, datablock->size);
-            // -----sus af\/
-            if (datablock->segment >= 0xD5)
+            if (id == 0x80 && datablock->segment > 0xD4)
                 datablock->segment -= -0x80;
-            //------sus af^
             off -= -(datablock->size + 0x10);
             work_off -= -datablock->size;
             break;
@@ -371,6 +288,282 @@ int decrypt_patch(void* work_buf, void* encrypted, void* output, uint32_t size) 
     return 0;
 }
 
+int diff(char* a, char* b, int type, char* output) {
+    uint16_t segment_size = type ? 0x400 : 0x800;
+    printf("comparing %s and %s with segment size = 0x%X\n", a, b, segment_size);
+    uint32_t size = getSz(a);
+    uint32_t bsize = getSz(b);
+    if (size != bsize) {
+        printf("not same size!\n");
+        return -1;
+    }
+    
+    void* cmpbuf = calloc(2, size);
+    if (!cmpbuf)
+        return -1;
+    
+    FILE* cp = fopen(a, "rb");
+    if (!cp) {
+        printf("error opening %s for read\n", a);
+        return -1;
+    }
+    fread(cmpbuf, size, 1, cp);
+    fclose(cp);
+    
+    cp = fopen(b, "rb");
+    if (!cp) {
+        printf("error opening %s for read\n", b);
+        return -1;
+    }
+    fread(cmpbuf + size, size, 1, cp);
+    fclose(cp);
+    
+    cp = fopen(output, "wb");
+    if (!cp) {
+        printf("error opening list for write\n");
+        return -1;
+    }
+    for (uint16_t segment = 0; segment < (size / segment_size); segment++) {
+        if (type == 2 && segment == 0xD5)
+            segment -= -0x80;
+        if (memcmp(cmpbuf + segment * segment_size, cmpbuf + size + segment * segment_size, segment_size)) {
+            printf("diff 0x%X [0x%X - 0x%X]\n", segment, segment * segment_size, segment * segment_size + (segment_size - 1));
+            fwrite(&segment, 2, 1, cp);
+        }
+    }
+    fclose(cp);
+
+    free(cmpbuf);
+    
+    printf("diff finished [%s]\n", output);
+    return 0;
+}
+
+int selftest(void);
+int patch_seggs(void);
+
+int main(int argc, char* argv[]) {
+
+    if (argc == 2) { // ugly special test commands, remove on release
+        if (!strcmp("selftest", argv[1]))
+            return selftest();
+        else if (!strcmp("patch_seggs", argv[1]))
+            return patch_seggs();
+    }
+
+    if (argc < 4) {
+        printf("\n----------------------\n> mkernie by skgleba <\n----------------------\n");
+        printf("\nusage: %s [decrypt | encrypt | list | diff] [args]\n", argv[0]);
+        printf("\n");
+        printf(" decrypt [INPUT_FILE] [OUTPUT_FILE] <TEMPLATE_FILE>\n");
+        printf("  ? decrypt an ernie update\n");
+        printf("  | INPUT_FILE => encrypted syscon update file\n");
+        printf("  | OUTPUT_FILE => decrypted syscon update output file\n");
+        printf("  | TEMPLATE_FILE => optional template for syscon flash, copied to output\n");
+        printf("  $ %s decrypt syscon_fw-00.bin syscon_fw_dec.bin\n", argv[0]);
+        printf("    => decrypt syscon_fw-00.bin to syscon_fw_dec.bin\n");
+        printf("\n");
+        printf(" encrypt [INPUT_FILE] [OUTPUT_FILE] [LIST_FILE] [HEADER PARAMS]\n");
+        printf("  ? create and encrypt an ernie update file\n");
+        printf("  | INPUT_FILE => syscon flash-like blob input file\n");
+        printf("  | OUTPUT_FILE => encrypted syscon update output file\n");
+        printf("  | LIST_FILE => list of INPUT_FILE segments to add to the syscon update file\n");
+        printf("  | HEADER PARAMS => one of:\n");
+        printf("    | => [SC_TYPE] [HW_INFOu32] [SC_FW_VERu32]\n");
+        printf("      | SC_TYPE => syscon type, one of 78k0r-L, 78k0r or rl78\n");
+        printf("      | HW_INFOu32 => target hardware info, eg 0x00416000\n");
+        printf("      | SC_FW_VERu32 => update syscon version, eg 0x0100060D\n");
+        printf("    | => [HEADER_FILE]\n");
+        printf("      | HEADER_FILE => encrypted syscon update, will use its params\n");
+        printf("  $ %s encrypt syscon.fw sc_patch.bin list.bin 78k0r 0x00406000 0x0100060D\n", argv[0]);
+        printf("    => extract segments listed in list.bin from syscon.fw and generate patch 'sc_patch.bin' using the set params\n");
+        printf("\n");
+        printf(" list [LIST_FILE] {SEGMENTS TO ADD}\n");
+        printf("  ? create a list of segments for the encrypt command\n");
+        printf("  | LIST_FILE => output list of segments to add to the syscon update file\n");
+        printf("  $ %s list list.bin 0x0 0x3 0xB8\n", argv[0]);
+        printf("    => create a list of segments to use for the encryptor [0x0, 0x3, 0xB8]\n");
+        printf("\n");
+        printf(" diff [LIST_FILE] [FILE_A] [FILE_B] [SC_TYPE]\n");
+        printf("  ? create a list of segments for the encrypt command (diff based)\n");
+        printf("  | LIST_FILE => output list of segments to add to the syscon update file\n");
+        printf("  | FILE_A => syscon flash-like blob file 1\n");
+        printf("  | FILE_B => syscon flash-like blob file 2\n");
+        printf("  | SC_TYPE => syscon type, one of 78k0r-L, 78k0r or rl78\n");
+        printf("  $ %s diff list.bin sc.bin sc_patched.bin rl78\n", argv[0]);
+        printf("    => create a list of rl78 segments to use for the encryptor by comparing sc.bin and sc_patched.bin\n");
+        printf("\n");
+        return -1;
+    }
+
+    if (!strcmp("list", argv[1])) {
+        FILE* fd = fopen(argv[2], "wb");
+        if (!fd) {
+            printf("error opening list for write\n");
+            return -1;
+        }
+        uint16_t segment = 0;
+        for (int i = 3; i < argc; i++) {
+            segment = (uint16_t)strtoul((argv[i] + 2), NULL, 16);
+            fwrite(&segment, 2, 1, fd);
+            printf("added segment 0x%X\n", segment);
+        }
+        fclose(fd);
+        return 0;
+    } else if (!strcmp("diff", argv[1])) {
+        int type;
+        if (!strcmp("78k0r-L", argv[5]))
+            type = 0;
+        else if (!strcmp("78k0r", argv[5]))
+            type = 1;
+        else if (!strcmp("rl78", argv[5]))
+            type = 2;
+        else {
+            printf("bad type!\n");
+            return -1;
+        }
+        if (diff(argv[3], argv[4], type, argv[2]) < 0) {
+            printf("diff error occured\n");
+            return -1;
+        }
+        return 0;
+    }
+
+    int encrypt = 0;
+    uint32_t fwv = 0, hwv = 0, type = 0;
+    char* enc = NULL, * dec = NULL, *ref = NULL;
+
+    if (!strcmp("encrypt", argv[1])) {
+        if (argc != 6 && argc != 8) {
+            printf("encrypt parse_args error: argc\n");
+            return -1;
+        }
+        dec = argv[2];
+        enc = argv[3];
+        ref = argv[4];
+        if (argc == 6) {
+            char header[0x30];
+            FILE* hp = fopen(argv[5], "rb");
+            if (!hp) {
+                printf("encrypt parse_args error: could not open header\n");
+                return -1;
+            }
+            fread(header, 0x30, 1, hp);
+            fclose(hp);
+            fwv = *(uint32_t*)(header + 4);
+            hwv = *(uint32_t*)(header + 8);
+            type = *(uint32_t*)(header + 0x18);
+        } else {
+            if (!strcmp("78k0r-L", argv[5]))
+                type = 0;
+            else if (!strcmp("78k0r", argv[5]))
+                type = 1;
+            else if (!strcmp("rl78", argv[5]))
+                type = 2;
+            else {
+                printf("encrypt parse_args error: bad type\n");
+                return 0;
+            }
+            hwv = (uint32_t)strtoul((argv[6] + 2), NULL, 16);
+            fwv = (uint32_t)strtoul((argv[7] + 2), NULL, 16);
+        }
+        encrypt = 1;
+    } else {
+        if (argc != 4 && argc != 5) {
+            printf("decrypt parse_args error: argc\n");
+            return -1;
+        }
+        enc = argv[2];
+        dec = argv[3];
+        if (argc == 5)
+            ref = argv[4];
+    }
+
+    if (!enc || !dec) {
+        printf("please set both input and output!\n");
+        return -1;
+    }
+
+    if (encrypt && !ref) {
+        printf("please set the seggs list!\n");
+        return -1;
+    }
+
+    mem_buffers* buf = calloc(5, 0x100000);
+
+    if (!buf) {
+        printf("calloc error!\n");
+        return -1;
+    }
+
+    FILE* fp = NULL;
+    void* output_buf = NULL;
+    char* output_file = NULL;
+    int ret = 0, output_size = 0;
+
+    if (encrypt) {
+        fp = fopen(ref, "rb");
+        if (!fp) {
+            printf("encrypt prep_mem error: could not open list\n");
+            return -1;
+        }
+        fread(buf->ref, getSz(ref), 1, fp);
+        fclose(fp);
+        fp = fopen(dec, "rb");
+        if (!fp) {
+            printf("encrypt prep_mem error: could not open source\n");
+            return -1;
+        }
+        fread(buf->dec, 0x100000, 1, fp);
+        fclose(fp);
+        ret = encrypt_patch(buf->work, buf->dec, buf->enc, (uint16_t*)buf->ref, getSz(ref) / 2, fwv, hwv, type);
+        output_buf = buf->enc;
+        output_size = ret;
+        output_file = enc;
+    } else {
+        fp = fopen(enc, "rb");
+        if (!fp) {
+            printf("decrypt prep_mem error: could not open source\n");
+            return -1;
+        }
+        fread(buf->enc, getSz(enc), 1, fp);
+        fclose(fp);
+        if (ref) {
+            fp = fopen(ref, "rb");
+            if (!fp) {
+                printf("decrypt prep_mem error: could not open template\n");
+                return -1;
+            }
+            fread(buf->dec, getSz(ref), 1, fp);
+            fclose(fp);
+        }
+        ret = decrypt_patch(buf->work, buf->enc, buf->dec, getSz(enc));
+        output_buf = buf->dec;
+        output_size = 0x100000;
+        output_file = dec;
+    }
+
+    if (ret < 0) {
+        printf("work error!\n");
+        free(buf);
+        return -1;
+    }
+    
+    FILE* fd = fopen(output_file, "wb");
+    if (!fd) {
+        printf("write output error\n");
+        return -1;
+    }
+    fwrite(output_buf, output_size, 1, fd);
+    fclose(fd);
+
+    printf("all done: %s[0x%X]\n", output_file, output_size);
+    free(buf);
+    return 0;
+}
+
+
+// test functions, remove from final
 int selftest(void) {
     printf("self test requested\n");
     void* test_buf = malloc(0x400);
@@ -399,232 +592,59 @@ int selftest(void) {
         }
     }
     printf("selftest passed\n");
+    free(test_buf);
     return 0;
 }
 
-int main(int argc, char* argv[]) {
-
-    if (argc == 2 && !strcmp("selftest", argv[1]))
-        return selftest();
-    
-    if (argc < 6 && (argc < 4 || (strcmp("list", argv[1]) && strcmp("convert", argv[1])))) {
-        printf("\n----------------------\n> mkernie by skgleba <\n----------------------\n");
-        printf("\nusage: %s [decrypt | repack | encrypt | list | convert | diff] [files] [opt params]\n", argv[0]);
-        printf("file args:\n -enc FILE => encrypted syscon update\n -dec FILE => decrypted syscon update\n");
-        printf("repack params:\n -ref FILE => encrypted syscon update, will use its params\n");
-        printf("encrypt params:\n -ref FILE => a list of segments to extract and include\n -header FILE => encrypted syscon update, will use its params\n");
-        printf("-fw HEX = > syscon firmware version\n -hw HEX = > target hardware info\n -type NUM = > target ernie revision\n -segment_size HEX = > single segment size (default 0x400)\n\n");
-            printf("examples:\n"
-            " %s decrypt -enc syscon_fw-00.bin -dec syscon_fw_dec.bin\n  => decrypt syscon_fw-00.bin to syscon_fw_dec.bin\n"
-            " %s repack -dec sc_fw_nojig.bin -enc sc_fw_mod_enc.bin -ref syscon_fw-00.bin\n  => encrypt sc_fw_nojig.bin to sc_fw_mod_enc.bin using syscon_fw-00.bin's params\n"
-            " %s convert 0x400 offset 0x5B910\n  => convert offset 0x5B910 to segment with segment size set to 0x400\n"
-            " %s list list.bin 0x0 0x3 0xB8\n  => create a list of segments to use for the encryptor [0x0, 0x3, 0xB8]\n"
-            " %s diff list.bin sc.bin sc_patched.bin 0x400\n  => create a list of segments to use for the encryptor by comparing sc.bin and sc_patched.bin with 0x400 segment size\n"
-            " %s encrypt -enc sc_patch.bin -dec syscon.fw -ref list.bin -type 1 -hw 0x00406000 -fw 0x0100060D\n  => extract segments listed in list.bin from syscon.fw and generate patch 'sc_patch.bin' using the set params\n",
-            argv[0], argv[0], argv[0], argv[0], argv[0], argv[0]
-        );
-        return -1;
-    }
-
-    if (!strcmp("list", argv[1])) {
-        FILE* fd = fopen(argv[2], "wb");
-        if (!fd) {
-            printf("error opening list for write\n");
-            return 0;
-        }
-        uint16_t segment = 0;
-        for (int i = 3; i < argc; i++) {
-            segment = (uint16_t)strtoul((argv[i] + 2), NULL, 16);
-            fwrite(&segment, 2, 1, fd);
-            printf("added segment 0x%X\n", segment);
-        }
-        fclose(fd);
-        return 0;
-    } else if (!strcmp("convert", argv[1])) {
-        uint16_t segment_size = (uint16_t)strtoul((argv[2] + 2), NULL, 16);
-        if (!segment_size)
-            return -1;
-        int seg2off = strcmp("offset", argv[3]);
-        uint32_t tmp = 0;
-        uint16_t segment = 0;
-        uint32_t off = 0;
-        printf("converting %s with segment size = 0x%X\n", (seg2off) ? "segment to offset" : "offset to segment", segment_size);
-        for (int i = 4; i < argc; i++) {
-            if (seg2off) {
-                segment = (uint16_t)strtoul((argv[i] + 2), NULL, 16);
-                // -----sus af\/
-                if (segment >= 0xD5)
-                    segment -= -0x80;
-                //------sus af^
-                off = (uint32_t)(segment * segment_size);
-                printf("segment %s is offset 0x%05X - 0x%05X\n", argv[i], off, off + segment_size - 1);
-            } else {
-                off = strtoul((argv[i] + 2), NULL, 16);
-                segment = off / segment_size;
-                if (segment >= 0xD5)
-                    segment -= 0x80;
-                printf("offset 0x%05X is segment 0x%X\n", off, segment);
-            }
-        }
-        return 0;
-    } else if (!strcmp("diff", argv[1])) {
-        uint16_t segment_size = (uint16_t)strtoul((argv[5] + 2), NULL, 16);
-        if (!segment_size)
-            return -1;
-        printf("comparing %s and %s with segment size = 0x%X\n", argv[3], argv[4], segment_size);
-        uint32_t size = getSz(argv[3]);
-        uint32_t bsize = getSz(argv[4]);
-        if (size != bsize) {
-            printf("not same size!\n");
+int patch_seggs(void) {
+    int ps_argc = 4;
+    char* ps_argv[] = { "mkernie", "decrypt", "ps_scup.bin", "ps_scup_dec.bin", "NUL", "NUL" };
+    printf("ps$ ");
+    for (int i = 0; i < ps_argc; i++)
+        printf("%s ", ps_argv[i]);
+    printf("\n");
+    if (main(ps_argc, ps_argv) >= 0) {
+        ps_argc = 6;
+        ps_argv[1] = "diff";
+        ps_argv[2] = "ps_list.bin";
+        ps_argv[3] = "ps_scup_dec.bin";
+        ps_argv[4] = "ps_cpatch.bin";
+        ps_argv[5] = "78k0r";
+        char ps_header[0x30];
+        FILE* pshp = fopen("ps_scup.bin", "rb");
+        if (!pshp) {
+            printf("encrypt parse_args error: could not open header\n");
             return -1;
         }
-        void* cmpbuf = calloc(2, size);
-        if (!cmpbuf)
-            return -1;
-        FILE* cp = fopen(argv[3], "rb");
-        fread(cmpbuf, size, 1, cp);
-        fclose(cp);
-        cp = fopen(argv[4], "rb");
-        fread(cmpbuf + size, size, 1, cp);
-        fclose(cp);
-        cp = fopen(argv[2], "wb");
-        if (!cp) {
-            printf("error opening list for write\n");
-            return -1;
-        }
-        for (uint16_t segment = 0; segment < (size / segment_size); segment++) {
-            if (segment == 0xD5)
-                segment -= -0x80;
-            if (memcmp(cmpbuf + segment * segment_size, cmpbuf + size + segment * segment_size, segment_size)) {
-                printf("diff 0x%X [0x%X - 0x%X]\n", segment, segment * segment_size, segment * segment_size + 0x3FF);
-                fwrite(&segment, 2, 1, cp);
-            }
-        }
-        fclose(cp);
-        free(cmpbuf);
-        printf("diff finished [%s]\n", argv[2]);
-        return 0;
-    }
-
-    int encrypt = 0;
-    uint32_t fwv = 0, hwv = 0, type = 0, segment_size = 0x400;
-    char* enc = NULL, * dec = NULL, * ref = NULL;
-
-    for (int i = 2; i < argc; i++) {
-        if (!strcmp("-ref", argv[i])) {
-            i -= -1;
-            ref = argv[i];
-        } else if (!strcmp("-enc", argv[i])) {
-            i -= -1;
-            enc = argv[i];
-        } else if (!strcmp("-dec", argv[i])) {
-            i -= -1;
-            dec = argv[i];
-        } else if (!strcmp("-fw", argv[i])) {
-            i -= -1;
-            fwv = (uint32_t)strtoul((argv[i] + 2), NULL, 16);
-        } else if (!strcmp("-hw", argv[i])) {
-            i -= -1;
-            hwv = (uint32_t)strtoul((argv[i] + 2), NULL, 16);
-        } else if (!strcmp("-type", argv[i])) {
-            i -= -1;
-            type = atoi(argv[i]);
-        } else if (!strcmp("-segment_size", argv[i])) {
-            i -= -1;
-            segment_size = (uint32_t)strtoul((argv[i] + 2), NULL, 16);
-        } else if (!strcmp("-header", argv[i])) {
-            i -= -1;
-            if (getSz(argv[i])) {
-                char header[0x30];
-                FILE* hp = fopen(argv[i], "rb");
-                fread(header, 0x30, 1, hp);
-                fclose(hp);
-                fwv = *(uint32_t*)(header + 4);
-                hwv = *(uint32_t*)(header + 8);
-                type = *(uint32_t*)(header + 0x18);
-                segment_size = *(uint32_t*)(header + 0x28);
+        fread(ps_header, 0x30, 1, pshp);
+        fclose(pshp);
+        int ps_type = *(uint32_t*)(ps_header + 0x18);
+        if (!ps_type)
+            ps_argv[5] = "78k0r-L";
+        else if (ps_type == 2)
+            ps_argv[5] = "rl78";
+        printf("ps$ ");
+        for (int i = 0; i < ps_argc; i++)
+            printf("%s ", ps_argv[i]);
+        printf("\n");
+        if (main(ps_argc, ps_argv) >= 0) {
+            ps_argc = 6;
+            ps_argv[1] = "encrypt";
+            ps_argv[2] = "ps_cpatch.bin";
+            ps_argv[3] = "ps_cpatch_enc.bin";
+            ps_argv[4] = "ps_list.bin";
+            ps_argv[5] = "ps_scup.bin";
+            printf("ps$ ");
+            for (int i = 0; i < ps_argc; i++)
+                printf("%s ", ps_argv[i]);
+            printf("\n");
+            if (main(ps_argc, ps_argv) >= 0) {
+                printf("patch_seggs done\n");
+                return 0;
             }
         }
     }
-    
-    if (strcmp("decrypt", argv[1])) {
-        if (strcmp("encrypt", argv[1]))
-            encrypt = 2;
-        else
-            encrypt = 1;
-    }
-
-    if (!enc || !dec) {
-        printf("please set both enc and dec!\n");
-        return 0;
-    }
-
-    if (encrypt && !ref) {
-        printf("please set ref!\n");
-        return 0;
-    }
-
-    mem_buffers* buf = calloc(5, 0x100000);
-
-    if (!buf) {
-        printf("calloc error!\n");
-        return 0;
-    }
-
-    FILE* fp = NULL;
-    void* output_buf = NULL;
-    char* output_file = NULL;
-    int ret = 0, output_size = 0;
-
-    switch (encrypt) {
-    case 2:
-    case 1:
-        if (ref) {
-            fp = fopen(ref, "rb");
-            fread(buf->ref, getSz(ref), 1, fp);
-            fclose(fp);
-        }
-        fp = fopen(dec, "rb");
-        fread(buf->dec, 0x100000, 1, fp);
-        fclose(fp);
-        ret = (encrypt == 2) ? repack_encrypt_patch(buf->work, buf->dec, buf->enc, buf->ref, getSz(ref)) : encrypt_patch(buf->work, buf->dec, buf->enc, buf->ref, getSz(ref) / 2, fwv, hwv, type, segment_size);
-        output_buf = buf->enc;
-        output_size = ret;
-        output_file = enc;
-        break;
-    case 0:
-        fp = fopen(enc, "rb");
-        fread(buf->enc, getSz(enc), 1, fp);
-        fclose(fp);
-        if (ref) {
-            fp = fopen(ref, "rb");
-            fread(buf->dec, getSz(ref), 1, fp);
-            fclose(fp);
-        }
-        ret = decrypt_patch(buf->work, buf->enc, buf->dec, getSz(enc));
-        output_buf = buf->dec;
-        output_size = 0x100000;
-        output_file = dec;
-        break;
-    }
-
-    if (ret < 0) {
-        printf("work error!\n");
-        free(buf);
-        return 0;
-    }
-    
-    FILE* fd = fopen(output_file, "wb");
-    if (!fd) {
-        printf("error\n");
-        return 0;
-    }
-    fwrite(output_buf, output_size, 1, fd);
-    fclose(fd);
-
-    printf("all done: %s[0x%X]\n", output_file, output_size);
-    free(buf);
-    return 0;
+    return -1;
 }
 
 
