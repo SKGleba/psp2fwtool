@@ -6,311 +6,348 @@
  * of the MIT license.  See the LICENSE file for details.
  */
 
-#include <stdio.h>
-#include <string.h>
-#include <stdlib.h>
 #include <inttypes.h>
 #include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 #include "../fwtool.h"
 
- //misc--------------------
-#define ALIGN_SECTOR(s) ((s + (BLOCK_SIZE - 1)) & -BLOCK_SIZE) // align (arg) to BLOCK_SIZE
+// misc--------------------
+#define ALIGN_SECTOR(s) ((s + (BLOCK_SIZE - 1)) & -BLOCK_SIZE)  // align (arg) to BLOCK_SIZE
 #define ARRAYSIZE(x) ((sizeof(x) / sizeof(0 [x])) / ((size_t)(!(sizeof(x) % sizeof(0 [x])))))
 
 #define CVMB(x) ((x / 2) / 1024)
 #define MBCV(x) ((x * 1024) * 2)
 #define KBCV(x) (x * 2)
 
-const char* part_code(int code) {
-	return pcode_str[code];
-}
+const char* part_code(int code) { return pcode_str[code]; }
 
 const char* part_type(int type) {
-	if (type == 6)
-		return "FAT16";
-	else if (type == 7)
-		return "exFAT";
-	else if (type == 0xDA)
-		return "raw";
-	return "unknown";
+    if (type == 6)
+        return "FAT16";
+    else if (type == 7)
+        return "exFAT";
+    else if (type == 0xDA)
+        return "raw";
+    return "unknown";
 }
 
 typedef struct {
-	char prev_unus[9];
-	partition_t partitions[7];
+    char prev_unus[9];
+    partition_t partitions[7];
 } __attribute__((packed)) mbr_part_t;
 
 static unsigned char mbr_part[sizeof(mbr_part_t)];
 static unsigned char mbr_full[sizeof(master_block_t)];
 
-const char part_magic[9] = { 0x05, 0x06, 0x00, 0xFF, 0x0F, 0x00, 0x00, 0x00, 0x00 };
+const char part_magic[9] = {0x05, 0x06, 0x00, 0xFF, 0x0F, 0x00, 0x00, 0x00, 0x00};
 const char mbr_magic[0x20] = SCEMBR_MAGIC;
 
 uint32_t mkmbr_getSz(const char* src) {
-	FILE* fp = fopen(src, "rb");
-	if (fp == NULL)
-		return 0;
-	fseek(fp, 0L, SEEK_END);
-	uint32_t sz = ftell(fp);
-	fclose(fp);
-	return sz;
+    FILE* fp = fopen(src, "rb");
+    if (fp == NULL)
+        return 0;
+    fseek(fp, 0L, SEEK_END);
+    uint32_t sz = ftell(fp);
+    fclose(fp);
+    return sz;
 }
 
 int readCheckMbrPart(const char* src) {
-	FILE* fp = fopen(src, "rb");
-	if (fp == NULL)
-		return -1;
-	fread(mbr_part, 1, sizeof(mbr_part_t), fp);
-	fclose(fp);
-	return memcmp(mbr_part, part_magic, 9);
+    FILE* fp = fopen(src, "rb");
+    if (fp == NULL)
+        return -1;
+    fread(mbr_part, 1, sizeof(mbr_part_t), fp);
+    fclose(fp);
+    return memcmp(mbr_part, part_magic, 9);
 }
 
 void parseMbrPart(mbr_part_t* pmbr, int slot) {
-	if (slot == 69) {
-		printf("\nPossible device size: %d(MB)\n\n", CVMB(pmbr->partitions[6].sz));
-		printf("Partitions:\n");
-		for (int i = 0; i < 7; ++i) {
-			partition_t* p = &pmbr->partitions[i];
-			if (p->code > 0)
-				printf("%d)\n name: %s(0x%X) active=%d\n offset=(MB)%d size=%d(MB)\n type=%s(0x%X) flags=0x%08x\n\n", i, part_code(p->code), p->code, p->active, CVMB(p->off), CVMB(p->sz), part_type(p->type), p->type, p->flags);
-			else
-				printf("%d is empty\n", i);
-		}
-	} else {
-		partition_t* p = &pmbr->partitions[slot];
-		if (p->code > 0)
-			printf("%d)\n name: %s(0x%X) active=%d\n offset=(MB)%d size=%d(MB)\n type=%s(0x%X) flags=0x%08x\n\n", slot, part_code(p->code), p->code, p->active, CVMB(p->off), CVMB(p->sz), part_type(p->type), p->type, p->flags);
-		else
-			printf("%d is empty\n", slot);
-	}
+    if (slot == 69) {
+        printf("\nPossible device size: %d(MB)\n\n", CVMB(pmbr->partitions[6].sz));
+        printf("Partitions:\n");
+        for (int i = 0; i < 7; ++i) {
+            partition_t* p = &pmbr->partitions[i];
+            if (p->code > 0)
+                printf("%d)\n name: %s(0x%X) active=%d\n offset=(MB)%d size=%d(MB)\n type=%s(0x%X) flags=0x%08x\n\n", i, part_code(p->code), p->code, p->active,
+                       CVMB(p->off), CVMB(p->sz), part_type(p->type), p->type, p->flags);
+            else
+                printf("%d is empty\n", i);
+        }
+    } else {
+        partition_t* p = &pmbr->partitions[slot];
+        if (p->code > 0)
+            printf("%d)\n name: %s(0x%X) active=%d\n offset=(MB)%d size=%d(MB)\n type=%s(0x%X) flags=0x%08x\n\n", slot, part_code(p->code), p->code, p->active,
+                   CVMB(p->off), CVMB(p->sz), part_type(p->type), p->type, p->flags);
+        else
+            printf("%d is empty\n", slot);
+    }
 }
 
 int applyMbrPart(const char* dst) {
-	FILE* fp = fopen(dst, "wb");
-	if (fp == NULL)
-		return -1;
-	fwrite(mbr_part, 1, sizeof(mbr_part_t), fp);
-	fclose(fp);
-	return 0;
+    FILE* fp = fopen(dst, "wb");
+    if (fp == NULL)
+        return -1;
+    fwrite(mbr_part, 1, sizeof(mbr_part_t), fp);
+    fclose(fp);
+    return 0;
 }
 
 int readCheckMbrFull(const char* src) {
-	FILE* fp = fopen(src, "rb");
-	if (fp == NULL)
-		return -1;
-	fread(mbr_full, 1, sizeof(master_block_t), fp);
-	fclose(fp);
-	return memcmp(mbr_full, mbr_magic, 0x20);
+    FILE* fp = fopen(src, "rb");
+    if (fp == NULL)
+        return -1;
+    fread(mbr_full, 1, sizeof(master_block_t), fp);
+    fclose(fp);
+    return memcmp(mbr_full, mbr_magic, 0x20);
 }
 
 int mkmbr_extractPartFromFull(const char* dst) {
-	FILE* fp = fopen(dst, "wb");
-	if (fp == NULL)
-		return -1;
-	fwrite((mbr_full + 0xe0), 1, sizeof(mbr_part_t), fp);
-	fclose(fp);
-	return 0;
+    FILE* fp = fopen(dst, "wb");
+    if (fp == NULL)
+        return -1;
+    fwrite((mbr_full + 0xe0), 1, sizeof(mbr_part_t), fp);
+    fclose(fp);
+    return 0;
 }
 
 void parseMbrFull(master_block_t* fmbr, int slot) {
-	if (slot == 69) {
-		printf("\nMBR:\n %s\n version: %d\n device size: %d(MB)\n\n", fmbr->magic, fmbr->version, CVMB(fmbr->device_size));
-		printf("Partitions:\n");
-		for (int i = 0; i < ARRAYSIZE(fmbr->partitions); ++i) {
-			partition_t* p = &fmbr->partitions[i];
-			if (p->code > 0)
-				printf("%d)\n name: %s(0x%X) active=%d\n offset=(MB)%d size=%d(MB)\n type=%s(0x%X) flags=0x%08x\n\n", i, part_code(p->code), p->code, p->active, CVMB(p->off), CVMB(p->sz), part_type(p->type), p->type, p->flags);
-			else
-				printf("%d is empty\n", i);
-		}
-	} else {
-		partition_t* p = &fmbr->partitions[slot];
-		if (p->code > 0)
-			printf("%d)\n name: %s(0x%X) active=%d\n offset=(MB)%d size=%d(MB)\n type=%s(0x%X) flags=0x%08x\n\n", slot, part_code(p->code), p->code, p->active, CVMB(p->off), CVMB(p->sz), part_type(p->type), p->type, p->flags);
-		else
-			printf("%d is empty\n", slot);
-	}
+    if (slot == 69) {
+        printf("\nMBR:\n %s\n version: %d\n device size: %d(MB)\n\n", fmbr->magic, fmbr->version, CVMB(fmbr->device_size));
+        printf("Partitions:\n");
+        for (int i = 0; i < ARRAYSIZE(fmbr->partitions); ++i) {
+            partition_t* p = &fmbr->partitions[i];
+            if (p->code > 0)
+                printf("%d)\n name: %s(0x%X) active=%d\n offset=(MB)%d size=%d(MB)\n type=%s(0x%X) flags=0x%08x\n\n", i, part_code(p->code), p->code, p->active,
+                       CVMB(p->off), CVMB(p->sz), part_type(p->type), p->type, p->flags);
+            else
+                printf("%d is empty\n", i);
+        }
+    } else {
+        partition_t* p = &fmbr->partitions[slot];
+        if (p->code > 0)
+            printf("%d)\n name: %s(0x%X) active=%d\n offset=(MB)%d size=%d(MB)\n type=%s(0x%X) flags=0x%08x\n\n", slot, part_code(p->code), p->code, p->active,
+                   CVMB(p->off), CVMB(p->sz), part_type(p->type), p->type, p->flags);
+        else
+            printf("%d is empty\n", slot);
+    }
 }
 
 int applyMbrFull(const char* dst) {
-	FILE* fp = fopen(dst, "wb");
-	if (fp == NULL)
-		return -1;
-	fwrite(mbr_full, 1, sizeof(master_block_t), fp);
-	fclose(fp);
-	return 0;
+    FILE* fp = fopen(dst, "wb");
+    if (fp == NULL)
+        return -1;
+    fwrite(mbr_full, 1, sizeof(master_block_t), fp);
+    fclose(fp);
+    return 0;
 }
 
 int mkmbr_partialMain(int argc, char* argv[]) {
+    int ret = readCheckMbrPart(argv[1]);
+    if (ret != 0) {
+        printf("file check error\n");
+        return -1;
+    }
 
-	int ret = readCheckMbrPart(argv[1]);
-	if (ret != 0) {
-		printf("file check error\n");
-		return -1;
-	}
+    mbr_part_t* pmbr = (mbr_part_t*)mbr_part;
 
-	mbr_part_t* pmbr = (mbr_part_t*)mbr_part;
+    if (strcmp("all", argv[2]) == 0) {
+        parseMbrPart(pmbr, 69);
+        return 0;
+    }
 
-	if (strcmp("all", argv[2]) == 0) {
-		parseMbrPart(pmbr, 69);
-		return 0;
-	}
+    int opslot = atoi(argv[2]);
+    if (opslot > 6) {
+        printf("slot oob\n");
+        return -1;
+    }
 
-	int opslot = atoi(argv[2]);
-	if (opslot > 6) {
-		printf("slot oob\n");
-		return -1;
-	}
+    parseMbrPart(pmbr, opslot);
+    partition_t* tpart = &pmbr->partitions[opslot];
 
-	parseMbrPart(pmbr, opslot);
-	partition_t* tpart = &pmbr->partitions[opslot];
+    for (int i = 3; i < argc; i -= -1) {
+        if (strcmp("-info", argv[i]) == 0)
+            return 0;
+        else if (strcmp("-clone", argv[i]) == 0) {
+            i -= -1;
+            if (atoi(argv[i]) < 7)
+                memcpy(&pmbr->partitions[opslot], &pmbr->partitions[atoi(argv[i])], sizeof(partition_t));
+        } else if (strcmp("-offset", argv[i]) == 0 && i < argc) {
+            i -= -1;
+            tpart->off = MBCV((uint32_t)atoi(argv[i]));
+        } else if (strcmp("-size", argv[i]) == 0 && i < argc) {
+            i -= -1;
+            tpart->sz = MBCV((uint32_t)atoi(argv[i]));
+        } else if (strcmp("-ksize", argv[i]) == 0 && i < argc) {
+            i -= -1;
+            tpart->sz = KBCV((uint32_t)atoi(argv[i]));
+        } else if (strcmp("-type", argv[i]) == 0 && i < argc) {
+            i -= -1;
+            tpart->type = (uint8_t)strtoul((argv[i] + 2), NULL, 16);
+        } else if (strcmp("-code", argv[i]) == 0 && i < argc) {
+            i -= -1;
+            tpart->code = (uint8_t)strtoul((argv[i] + 2), NULL, 16);
+        } else if (strcmp("-active", argv[i]) == 0 && i < argc) {
+            i -= -1;
+            tpart->active = (uint8_t)atoi(argv[i]);
+        } else if (strcmp("-flags", argv[i]) == 0 && i < argc) {
+            i -= -1;
+            tpart->flags = (uint32_t)strtoul(argv[i], NULL, 16);
+        }
+    }
 
-	for (int i = 3; i < argc; i -= -1) {
-		if (strcmp("-info", argv[i]) == 0)
-			return 0;
-		else if (strcmp("-clone", argv[i]) == 0) {
-			i -= -1;
-			if (atoi(argv[i]) < 7)
-				memcpy(&pmbr->partitions[opslot], &pmbr->partitions[atoi(argv[i])], sizeof(partition_t));
-		} else if (strcmp("-offset", argv[i]) == 0 && i < argc) {
-			i -= -1;
-			tpart->off = MBCV((uint32_t)atoi(argv[i]));
-		} else if (strcmp("-size", argv[i]) == 0 && i < argc) {
-			i -= -1;
-			tpart->sz = MBCV((uint32_t)atoi(argv[i]));
-		} else if (strcmp("-ksize", argv[i]) == 0 && i < argc) {
-			i -= -1;
-			tpart->sz = KBCV((uint32_t)atoi(argv[i]));
-		} else if (strcmp("-type", argv[i]) == 0 && i < argc) {
-			i -= -1;
-			tpart->type = (uint8_t)strtoul((argv[i] + 2), NULL, 16);
-		} else if (strcmp("-code", argv[i]) == 0 && i < argc) {
-			i -= -1;
-			tpart->code = (uint8_t)strtoul((argv[i] + 2), NULL, 16);
-		} else if (strcmp("-active", argv[i]) == 0 && i < argc) {
-			i -= -1;
-			tpart->active = (uint8_t)atoi(argv[i]);
-		} else if (strcmp("-flags", argv[i]) == 0 && i < argc) {
-			i -= -1;
-			tpart->flags = (uint32_t)strtoul(argv[i], NULL, 16);
-		}
-	}
+    if (applyMbrPart(argv[1]) < 0)
+        printf("write failed\n");
 
-	if (applyMbrPart(argv[1]) < 0)
-		printf("write failed\n");
+    printf("\nfinished: %s\n\noutput:\n", argv[1]);
 
-	printf("\nfinished: %s\n\noutput:\n", argv[1]);
+    parseMbrPart(pmbr, opslot);
 
-	parseMbrPart(pmbr, opslot);
-
-	return 0;
+    return 0;
 }
 
 int mkmbr_fullMain(int argc, char* argv[]) {
+    int ret = readCheckMbrFull(argv[1]);
+    if (ret != 0) {
+        printf("file check error\n");
+        return -1;
+    }
 
-	int ret = readCheckMbrFull(argv[1]);
-	if (ret != 0) {
-		printf("file check error\n");
-		return -1;
-	}
+    if (strcmp("extract", argv[2]) == 0)
+        return mkmbr_extractPartFromFull(argv[3]);
 
-	if (strcmp("extract", argv[2]) == 0)
-		return mkmbr_extractPartFromFull(argv[3]);
+    master_block_t* fmbr = (master_block_t*)mbr_full;
 
-	master_block_t* fmbr = (master_block_t*)mbr_full;
+    if (strcmp("all", argv[2]) == 0) {
+        parseMbrFull(fmbr, 69);
+        return 0;
+    }
 
-	if (strcmp("all", argv[2]) == 0) {
-		parseMbrFull(fmbr, 69);
-		return 0;
-	}
+    int opslot = atoi(argv[2]);
+    if (opslot > ARRAYSIZE(fmbr->partitions)) {
+        printf("slot oob\n");
+        return -1;
+    }
 
-	int opslot = atoi(argv[2]);
-	if (opslot > ARRAYSIZE(fmbr->partitions)) {
-		printf("slot oob\n");
-		return -1;
-	}
+    parseMbrFull(fmbr, opslot);
+    partition_t* tpart = &fmbr->partitions[opslot];
 
-	parseMbrFull(fmbr, opslot);
-	partition_t* tpart = &fmbr->partitions[opslot];
+    for (int i = 3; i < argc; i -= -1) {
+        if (strcmp("-info", argv[i]) == 0)
+            return 0;
+        else if (strcmp("-clone", argv[i]) == 0) {
+            i -= -1;
+            if (atoi(argv[i]) < ARRAYSIZE(fmbr->partitions))
+                memcpy(&fmbr->partitions[opslot], &fmbr->partitions[atoi(argv[i])], sizeof(partition_t));
+        } else if (strcmp("-offset", argv[i]) == 0 && i < argc) {
+            i -= -1;
+            if (argv[i][0] == '0')
+                tpart->off = (uint32_t)strtoul((argv[i] + 2), NULL, 16);
+            else
+                tpart->off = MBCV((uint32_t)atoi(argv[i]));
+        } else if (strcmp("-size", argv[i]) == 0 && i < argc) {
+            i -= -1;
+            if (argv[i][0] == '0')
+                tpart->sz = (uint32_t)strtoul((argv[i] + 2), NULL, 16);
+            else
+                tpart->sz = MBCV((uint32_t)atoi(argv[i]));
+        } else if (strcmp("-type", argv[i]) == 0 && i < argc) {
+            i -= -1;
+            tpart->type = (uint8_t)strtoul((argv[i] + 2), NULL, 16);
+        } else if (strcmp("-code", argv[i]) == 0 && i < argc) {
+            i -= -1;
+            tpart->code = (uint8_t)strtoul((argv[i] + 2), NULL, 16);
+        } else if (strcmp("-active", argv[i]) == 0 && i < argc) {
+            i -= -1;
+            tpart->active = (uint8_t)atoi(argv[i]);
+        } else if (strcmp("-flags", argv[i]) == 0 && i < argc) {
+            i -= -1;
+            tpart->flags = (uint32_t)strtoul(argv[i], NULL, 16);
+        } else if ((tpart->code == SCEMBR_PART_SBLS) && (tpart->active) && (strcmp("-sl", argv[i]) == 0) && (i < argc)) {
+            i -= -1;
+            fmbr->sl_off = tpart->off + (uint32_t)((argv[i] + 2), NULL, 16);
+        }
+    }
 
-	for (int i = 3; i < argc; i -= -1) {
-		if (strcmp("-info", argv[i]) == 0)
-			return 0;
-		else if (strcmp("-clone", argv[i]) == 0) {
-			i -= -1;
-			if (atoi(argv[i]) < ARRAYSIZE(fmbr->partitions))
-				memcpy(&fmbr->partitions[opslot], &fmbr->partitions[atoi(argv[i])], sizeof(partition_t));
-		} else if (strcmp("-offset", argv[i]) == 0 && i < argc) {
-			i -= -1;
-			tpart->off = MBCV((uint32_t)atoi(argv[i]));
-		} else if (strcmp("-size", argv[i]) == 0 && i < argc) {
-			i -= -1;
-			tpart->sz = MBCV((uint32_t)atoi(argv[i]));
-		} else if (strcmp("-type", argv[i]) == 0 && i < argc) {
-			i -= -1;
-			tpart->type = (uint8_t)strtoul((argv[i] + 2), NULL, 16);
-		} else if (strcmp("-code", argv[i]) == 0 && i < argc) {
-			i -= -1;
-			tpart->code = (uint8_t)strtoul((argv[i] + 2), NULL, 16);
-		} else if (strcmp("-active", argv[i]) == 0 && i < argc) {
-			i -= -1;
-			tpart->active = (uint8_t)atoi(argv[i]);
-		} else if (strcmp("-flags", argv[i]) == 0 && i < argc) {
-			i -= -1;
-			tpart->flags = (uint32_t)strtoul(argv[i], NULL, 16);
-		}
-	}
+    if (tpart->code == SCEMBR_PART_SBLS) {
+        if (tpart->active)
+            fmbr->active_sbls_off = tpart->off;
+        if (!(fmbr->sbls_off[tpart->active]))
+            fmbr->sbls_off[tpart->active] = tpart->off;
+    }
 
-	if (applyMbrFull(argv[1]) < 0)
-		printf("write failed\n");
+    if ((tpart->code == SCEMBR_PART_KERNEL) && (tpart->active))
+        fmbr->active_os_off = tpart->off;
 
-	printf("\nfinished: %s\n\noutput:\n", argv[1]);
+    if (applyMbrFull(argv[1]) < 0)
+        printf("write failed\n");
 
-	parseMbrFull(fmbr, opslot);
+    printf("\nfinished: %s\n\noutput:\n", argv[1]);
 
-	return 0;
+    parseMbrFull(fmbr, opslot);
+
+    return 0;
+}
+
+int mkmbr_createNew(const char* dst, uint32_t devsz) {
+    master_block_t* fmbr = (master_block_t*)mbr_full;
+    memset(fmbr, 0, sizeof(master_block_t));
+    memcpy(fmbr->magic, mbr_magic, 0x20);
+    fmbr->version = 3;
+    fmbr->device_size = devsz;
+
+    FILE* fp = fopen(dst, "wb");
+    if (fp == NULL)
+        return -1;
+    fwrite(mbr_full, 1, sizeof(master_block_t), fp);
+    fclose(fp);
+    return 0;
 }
 
 int mkmbr_main(int argc, char* argv[]) {
+    if (argc < 4) {
+        printf("\n--------------------\n> mkmbr by skgleba <\n--------------------\n");
+        printf("\nusage: %s [scembr] [slot] [opt ..]\n\n", argv[0]);
+        printf("[scembr] = dumped SCE MBR (512B) or user partition table (128B)\n");
+        printf("[slot] = partition slot number or 'all' to list all slots\n");
+        printf("[opt] = optional args ('h' = hex and 'd' = dec):\n");
+        printf(" '-info' displays [slot] contents\n");
+        printf(" '-clone dX' copies slot 'X' to slot [slot]\n");
+        printf(" '-offset dX' sets [slot]->offset to 'X'\n");
+        printf(" '-size dX' sets [slot]->size to 'X'\n");
+        printf(" '-type hX' sets (u8)[slot]->type to 'X'\n");
+        printf(" '-code hX' sets (u8)[slot]->code to 'X'\n");
+        printf(" '-active dX' sets [slot]->active to 'X'\n");
+        printf(" '-flags hX' sets (u32)[slot]->flags to 'X'\n");
+        printf("\npartition codes:\n");
+        for (int i = 0; i < 16; ++i) {
+            printf(" %s: 0x%X\n", part_code(i), i);
+        }
+        printf("\n'%s scembr.part 3 -clone 1 -code 0x8' - create a ux0 partition in slot 3 that shares its parameters with the one in slot 1 (hybrid)\n",
+               argv[0]);
+        printf("\n\nblank mbr: %s [scembr] [create] [device_size]\n", argv[0]);
+        printf("\n'%s scembr.part create 2048' - create a blank SCE MBR with device size of 2GiB\n\n", argv[0]);
+        return -1;
+    }
 
-	if (argc < 4) {
-		printf("\n--------------------\n> mkmbr by skgleba <\n--------------------\n");
-		printf("\nusage: %s [scembr] [slot] [opt ..]\n\n", argv[0]);
-		printf("[scembr] = dumped SCE MBR (512B) or user partition table (128B)\n");
-		printf("[slot] = partition slot number or 'all' to list all slots\n");
-		printf("[opt] = optional args ('h' = hex and 'd' = dec):\n");
-		printf(" '-info' displays [slot] contents\n");
-		printf(" '-clone dX' copies slot 'X' to slot [slot]\n");
-		printf(" '-offset dX' sets [slot]->offset to 'X'\n");
-		printf(" '-size dX' sets [slot]->size to 'X'\n");
-		printf(" '-type hX' sets (u8)[slot]->type to 'X'\n");
-		printf(" '-code hX' sets (u8)[slot]->code to 'X'\n");
-		printf(" '-active dX' sets [slot]->active to 'X'\n");
-		printf(" '-flags hX' sets (u32)[slot]->flags to 'X'\n");
-		printf("\npartition codes:\n");
-		for (int i = 0; i < 16; ++i) {
-			printf(" %s: 0x%X\n", part_code(i), i);
-		}
-		printf("\n'%s scembr.part 3 -clone 1 -code 0x8' - create a ux0 partition in slot 3 that shares its parameters with the one in slot 1 (hybrid)\n", argv[0]);
-		return -1;
-	}
+    int ret = (int)mkmbr_getSz(argv[1]);
+    if (ret == sizeof(mbr_part_t))
+        ret = mkmbr_partialMain(argc, argv);
+    else if (ret == sizeof(master_block_t))
+        ret = mkmbr_fullMain(argc, argv);
+    else if ((ret == 0) && (strcmp("create", argv[2]) == 0)) {
+        printf("creating new SCE MBR\n");
+        ret = mkmbr_createNew(argv[1], (argv[3][0] == '0') ? (uint32_t)strtoul((argv[3] + 2), NULL, 16) : (uint32_t)MBCV(atoi(argv[3])));
+    } else
+        printf("bad file size - %d\n", ret);
 
-	int ret = (int)mkmbr_getSz(argv[1]);
-	if (ret == sizeof(mbr_part_t))
-		ret = mkmbr_partialMain(argc, argv);
-	else if (ret == sizeof(master_block_t))
-		ret = mkmbr_fullMain(argc, argv);
-	else
-		printf("bad file size - %d\n", ret);
+    printf("\nexit status: 0x%X\n", ret);
 
-	printf("\nexit status: 0x%X\n", ret);
-
-	return ret;
+    return ret;
 }
 
 #ifndef MKMBR_SLAVE
-int main(int argc, char* argv[]) {
-	return mkmbr_main(argc, argv);
-}
+int main(int argc, char* argv[]) { return mkmbr_main(argc, argv); }
 #endif

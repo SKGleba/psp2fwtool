@@ -269,7 +269,13 @@ struct _master_block_t {
 	char magic[0x20];
 	uint32_t version;
 	uint32_t device_size;
-	char unk1[0x28];
+	uint32_t unused[2];
+	uint32_t sl_off;
+	uint32_t sl_sz;
+	uint32_t active_sbls_off;
+	uint32_t sbls_off[2];
+	uint32_t active_os_off;
+	uint32_t unused2[2];
 	partition_t partitions[0x10];
 	char unk2[0x5e];
 	char unk3[0x10 * 4];
