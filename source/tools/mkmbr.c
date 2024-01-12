@@ -297,6 +297,7 @@ int mkmbr_createNew(const char* dst, uint32_t devsz) {
     memcpy(fmbr->magic, mbr_magic, 0x20);
     fmbr->version = 3;
     fmbr->device_size = devsz;
+    fmbr->sig = 0xAA55;
 
     FILE* fp = fopen(dst, "wb");
     if (fp == NULL)
